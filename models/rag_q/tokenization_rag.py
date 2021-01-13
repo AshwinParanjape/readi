@@ -16,9 +16,9 @@
 import os
 from typing import List, Optional
 
-from ...file_utils import add_start_docstrings
-from ...tokenization_utils_base import PREPARE_SEQ2SEQ_BATCH_DOCSTRING, BatchEncoding
-from ...utils import logging
+from transformers.file_utils import add_start_docstrings
+from transformers.tokenization_utils_base import PREPARE_SEQ2SEQ_BATCH_DOCSTRING, BatchEncoding
+from transformers.utils import logging
 from .configuration_rag import RagConfig
 
 
