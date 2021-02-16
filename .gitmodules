@@ -1,0 +1,3 @@
+[submodule "retriever/ColBERT"]
+	path = retriever/ColBERT
+	url = git@github.com:AshwinParanjape/ColBERT.git
