@@ -604,22 +604,22 @@ if __name__ == '__main__':
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
 
     paths_group = parser.add_argument_group(title='input file paths')
-    paths_group.add_argument('--train_source_path', type=str, default=base_path / 'data/nq/train.source',
+    paths_group.add_argument('--train_source_path', type=str, default=(base_path / 'data/nq/train.source').as_posix(),
                         help='Path to train.source file, each line contains input to the generator')
-    paths_group.add_argument('--train_target_path', type=str, default=base_path / 'data/nq/train.target',
+    paths_group.add_argument('--train_target_path', type=str, default=(base_path / 'data/nq/train.target').as_posix(),
                         help='Path to train.target file, each line contains expected output from the generator')
-    paths_group.add_argument('--train_p_ranked_passages', type=str, default=rerank_exp_base_path / '10/ranking_passages.tsv' ,
+    paths_group.add_argument('--train_p_ranked_passages', type=str, default=(rerank_exp_base_path / '10/ranking_passages.tsv').as_posix() ,
                         help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
-    paths_group.add_argument('--train_q_ranked_passages', type=str, default=rerank_exp_base_path / '11/ranking_passages.tsv' ,
+    paths_group.add_argument('--train_q_ranked_passages', type=str, default=(rerank_exp_base_path / '11/ranking_passages.tsv' ).as_posix(),
                         help='Path to ranking_passages.tsv, retrieved and ranked using q-scorer')
 
-    paths_group.add_argument('--val_source_path', type=str, default=base_path / 'data/nq/val.source',
+    paths_group.add_argument('--val_source_path', type=str, default=(base_path / 'data/nq/val.source').as_posix(),
                              help='Path to train.source file, each line contains input to the generator')
-    paths_group.add_argument('--val_target_path', type=str, default=base_path / 'data/nq/val.target',
+    paths_group.add_argument('--val_target_path', type=str, default=(base_path / 'data/nq/val.target').as_posix(),
                              help='Path to train.target file, each line contains expected output from the generator')
-    paths_group.add_argument('--val_p_ranked_passages', type=str, default=rerank_exp_base_path / '16/ranking_passages.tsv' ,
+    paths_group.add_argument('--val_p_ranked_passages', type=str, default=(rerank_exp_base_path / '16/ranking_passages.tsv').as_posix() ,
                              help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
-    paths_group.add_argument('--val_q_ranked_passages', type=str, default=rerank_exp_base_path / '17/ranking_passages.tsv' ,
+    paths_group.add_argument('--val_q_ranked_passages', type=str, default=(rerank_exp_base_path / '17/ranking_passages.tsv').as_posix() ,
                              help='Path to ranking_passages.tsv, retrieved and ranked using q-scorer')
 
     training_args_group = parser.add_argument_group(title='training args')
