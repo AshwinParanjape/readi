@@ -583,8 +583,7 @@ class ELBOLossSystem(pl.LightningModule):
 
 def log_value(filename, stage, epoch, key, batch_idx, value):
     with open(filename, 'a') as f:
-        for qid, value in zip(qids, values):
-            f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}')
+        f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}')
 
 def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_values):
     with open(filename, 'a') as f:
