@@ -657,7 +657,7 @@ if __name__ == '__main__':
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
-        model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen)
+        model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir)
         doc_sampler = GuidedDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
