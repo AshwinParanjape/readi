@@ -442,8 +442,7 @@ class MarginalizedNLLFn(torch.nn.Module):
         scores = self.scorer(sources, batched_docs)
         doc_log_probs = torch.nn.functional.log_softmax(scores, dim=1) #Shape: n_instances x n_docs
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
-        instancewise_log_prob = (doc_log_probs + generator_log_prob).sum(dim=1) #Shape: n_instances
-        loss = -torch.logsumexp(instancewise_log_prob, dim=0)
+        loss = -torch.logsumexp(doc_log_probs + generator_log_prob, dim=(0, 1))
         return MarginalizedNLL(loss, lm_nll = -generator_log_prob, p_scores=scores)
 
 @dataclass
@@ -473,12 +472,11 @@ class ELBOFn(torch.nn.Module):
         q_probs = stable_softmax(q_scores, dim=1)
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
 
-        instancewise_log_loss = (p_log_probs + generator_log_prob).sum(dim=1) #Shape: n_instances
-        marginalized_nll_loss = -torch.logsumexp(instancewise_log_loss, dim=0)
+        marginalized_nll_loss = -torch.logsumexp(p_log_probs + generator_log_prob, dim=(0, 1))
 
         reconstruction_score = (q_probs * generator_log_prob).sum()
         kl_regularization = (q_probs * (q_probs.log() - p_probs.log())).sum()
-        elbo_loss = -(reconstruction_score + kl_regularization)
+        elbo_loss = -(reconstruction_score - kl_regularization)
 
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
 
@@ -489,10 +487,23 @@ class NLLLossSystem(pl.LightningModule):
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.loss_fn = LM_NLL(self.generator)
+        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output = self.loss_fn(batch['source'], batch['target'])
+
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.sum())
+
+        return output.sum()
+
+    def training_step(self, batch, batch_idx):
+        # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        output = self.loss_fn(batch['source'], batch['target'])
+
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'loss', output.sum())
+
         return output.sum()
 
     def configure_optimizers(self):
@@ -500,7 +511,7 @@ class NLLLossSystem(pl.LightningModule):
         return optimizer
 
 class MarginalizedLossSystem(pl.LightningModule):
-    def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen) :
+    def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='') :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -513,10 +524,34 @@ class MarginalizedLossSystem(pl.LightningModule):
         self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator)
 
+        self.expdir = expdir
+        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
+        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
+        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output: MarginalizedNLL = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
-        return output.loss, output
+
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.loss)
+
+        log_batch_value(Path(self.expdir)/ Path('p_scores.tsv'), 'train', self.current_epoch, batch['qid'], batch['doc_ids'], output.p_scores)
+        log_batch_value(Path(self.expdir)/ Path('nll.tsv'), 'train', self.current_epoch, batch['qid'], batch['doc_ids'], output.lm_nll)
+
+        return output.loss
+
+    def validation_step(self, batch, batch_idx):
+        # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        output: MarginalizedNLL = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'loss', output.loss)
+
+        log_batch_value(Path(self.expdir)/ Path('p_scores.tsv'), 'val', self.current_epoch, batch['qid'], batch['doc_ids'], output.p_scores)
+        log_batch_value(Path(self.expdir)/ Path('nll.tsv'), 'val', self.current_epoch, batch['qid'], batch['doc_ids'], output.lm_nll)
+        return output.loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
@@ -543,13 +578,13 @@ class ELBOLossSystem(pl.LightningModule):
         self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator)
         self.expdir = expdir
         with open(Path(self.expdir)/ Path('p_scores.tsv'), 'w') as f:
-            f.write('stage\nepoch\tq_id\tdoc_id\tp_score\n')
+            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
         with open(Path(self.expdir)/ Path('q_scores.tsv'), 'w') as f:
-            f.write('stage\nepoch\tq_id\tdoc_id\tq_score\n')
+            f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
         with open(Path(self.expdir)/Path('nll.tsv'), 'w') as f:
-            f.write('stage\nepoch\tq_id\tdoc_id\tnll\n')
+            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
         with open(Path(self.expdir)/Path('metrics.tsv'), 'w') as f:
-            f.write('stage\nepoch\tbatch_idx\tkey\tvalue\n')
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
@@ -578,7 +613,7 @@ class ELBOLossSystem(pl.LightningModule):
 
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
         return optimizer
 
 def log_value(filename, stage, epoch, key, batch_idx, value):
@@ -645,12 +680,12 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.loss_type == 'NLL':
         model = NLLLossSystem()
-        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path)
+        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, expdir=curexpdir)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
-        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen)
+        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir)
         doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
@@ -666,10 +701,10 @@ if __name__ == '__main__':
     else:
         assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
-    #trainer = Trainer(fast_dev_run=True)
-    #trainer.fit(model, train_dataloader, val_dataloader)
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
-    trainer = Trainer(gpus=1, logger=logger)
-    trainer.fit(model, train_dataloader)
+    #trainer = Trainer(gpus=1, fast_dev_run=True, default_root_dir=curexpdir)
+    #trainer.fit(model, train_dataloader, val_dataloader)
+    trainer = Trainer(gpus=1, logger=logger, default_root_dir=curexpdir, track_grad_norm=2)
+    trainer.fit(model, train_dataloader, val_dataloader)
 
 
