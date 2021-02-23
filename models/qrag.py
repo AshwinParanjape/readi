@@ -152,8 +152,8 @@ class ColBERT(BertPreTrainedModel):
 
 class ClosedSetRetrievals():
     """Iterable Dataset that loads the closed set of retrieved passages in chunks and also works with multiple workers"""
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, path: str):
+        self.path = Path(path)
 
     def __iter__(self):
         if self.path.suffix=='.gz':
@@ -269,7 +269,7 @@ class Seq2SeqDataset(torch.utils.data.IterableDataset):
 
 
 class PDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, p_retrievals_path: Path, sampler:DocumentSampler):
+    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'])
         self.target = pd.read_csv(target_path, sep='\t', names=['target'])
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
@@ -299,7 +299,7 @@ class PDataset(torch.utils.data.IterableDataset):
 
 
 class PQDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path:str, target_path: str, p_retrievals_path: Path, q_retrievals_path: Path, sampler: DocumentSampler):
+    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'])
         self.target = pd.read_csv(target_path, sep='\t', names=['target'])
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
