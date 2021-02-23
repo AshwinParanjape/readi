@@ -554,10 +554,10 @@ class ELBOLossSystem(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output: ELBO = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', 'loss', self.current_epoch, batch['qid'], output.loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', 'marginalized_loss', self.current_epoch, batch['qid'], output.marginalized_loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', 'reconstruction_score', self.current_epoch, batch['qid'], output.reconstruction_score)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', 'kl_divergence', self.current_epoch, batch['qid'], output.kl_divergence)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.loss)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'marginalized_loss',  output.marginalized_loss)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'reconstruction_score', output.reconstruction_score)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'kl_divergence',  output.kl_divergence)
 
         log_batch_value(Path(self.expdir)/ Path('p_scores.tsv'), 'train', self.current_epoch, batch['qid'], batch['doc_ids'], output.p_scores)
         log_batch_value(Path(self.expdir)/ Path('q_scores.tsv'), 'train', self.current_epoch, batch['qid'], batch['doc_ids'], output.q_scores)
@@ -566,10 +566,10 @@ class ELBOLossSystem(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         output: ELBO = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', 'loss', self.current_epoch, batch['qid'], output.loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', 'marginalized_loss', self.current_epoch, batch['qid'], output.marginalized_loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', 'reconstruction_score', self.current_epoch, batch['qid'], output.reconstruction_score)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', 'kl_divergence', self.current_epoch, batch['qid'], output.kl_divergence)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'loss', output.loss)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'marginalized_loss',  output.marginalized_loss)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'reconstruction_score', output.reconstruction_score)
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'kl_divergence',  output.kl_divergence)
 
         log_batch_value(Path(self.expdir)/ Path('p_scores.tsv'), 'val', self.current_epoch, batch['qid'], batch['doc_ids'], output.p_scores)
         log_batch_value(Path(self.expdir)/ Path('q_scores.tsv'), 'val', self.current_epoch, batch['qid'], batch['doc_ids'], output.q_scores)
@@ -583,7 +583,7 @@ class ELBOLossSystem(pl.LightningModule):
 
 def log_value(filename, stage, epoch, key, batch_idx, value):
     with open(filename, 'a') as f:
-        f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}')
+        f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}\n')
 
 def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_values):
     with open(filename, 'a') as f:
