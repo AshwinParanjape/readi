@@ -481,12 +481,13 @@ class ELBOFn(torch.nn.Module):
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
 
 class NLLLossSystem(pl.LightningModule):
-    def __init__(self) :
+    def __init__(self, lr=1e-3) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.loss_fn = LM_NLL(self.generator)
+        self.lr = lr
         with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
@@ -507,11 +508,11 @@ class NLLLossSystem(pl.LightningModule):
         return output.sum()
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
 class MarginalizedLossSystem(pl.LightningModule):
-    def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='') :
+    def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -525,6 +526,7 @@ class MarginalizedLossSystem(pl.LightningModule):
         self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator)
 
         self.expdir = expdir
+        self.lr = lr
         with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
         with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
@@ -554,11 +556,11 @@ class MarginalizedLossSystem(pl.LightningModule):
         return output.loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
 class ELBOLossSystem(pl.LightningModule):
-    def __init__(self, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir=''):
+    def __init__(self, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -576,6 +578,7 @@ class ELBOLossSystem(pl.LightningModule):
         saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
         self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator)
+        self.lr = lr
         self.expdir = expdir
         with open(Path(self.expdir)/ Path('p_scores.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
@@ -585,6 +588,7 @@ class ELBOLossSystem(pl.LightningModule):
             f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
         with open(Path(self.expdir)/Path('metrics.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
@@ -613,7 +617,7 @@ class ELBOLossSystem(pl.LightningModule):
 
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
 def log_value(filename, stage, epoch, key, batch_idx, value):
@@ -666,6 +670,7 @@ if __name__ == '__main__':
                                      help="Sample from top_k docs (Marginalized, ELBO)")
     training_args_group.add_argument('--docs_sampling_temperature', type=float, default=1,
                                      help="Temperature used for sampling docs (Marginalized, ELBO)")
+    training_args_group.add_argument('--lr', type=float, default=1e-6, help='Adam\'s Learning rate')
 
     Experiment.add_argument_group(parser)
     node_rank = int(os.environ.get("NODE_RANK", 0))
@@ -679,20 +684,20 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     if args.loss_type == 'NLL':
-        model = NLLLossSystem()
+        model = NLLLossSystem(lr = args.lr)
         train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, expdir=curexpdir)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
-        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir)
+        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr)
         doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
-        model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir)
+        model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr)
         doc_sampler = GuidedDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
