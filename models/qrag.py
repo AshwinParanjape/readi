@@ -165,8 +165,10 @@ class ClosedSetRetrievals():
             last_qid = None
             last_qid_retrievals = None
             for chunk_df in pd.read_csv(file, sep='\t', chunksize=100000,
-                                        names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'],
-                                        header=0, dtype=str, na_filter=False):
+                                        names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'], header=0,
+                                        dtype={'qid': int, 'pid': int, 'rank': int, 'score': float, 'doc_text':str,
+                                               'title':str} ,
+                                        na_filter=False):
                 for qid, retrievals in chunk_df.groupby('qid'):
                     retrievals['text'] = retrievals['title'].str.cat(retrievals['doc_text'], sep=f' {TEXT_TOKEN} ')
 
