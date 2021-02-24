@@ -708,8 +708,10 @@ if __name__ == '__main__':
                                      help="Temperature used for sampling docs (Marginalized, ELBO)")
     training_args_group.add_argument('--lr', type=float, default=1e-6, help='Adam\'s Learning rate')
     training_args_group.add_argument('--accumulate_grad_batches', type=int, default=16, help='Accumulate gradients for given number of batches')
+    training_args_group.add_argument('--gpus', type=int, default=1, help='Number of gpus to use')
     training_args_group.add_argument('--doc_sampler', type=str, default='GuidedDocumentSampler',
                                      help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO)}')
+
 
     Experiment.add_argument_group(parser)
     node_rank = int(os.environ.get("NODE_RANK", 0))
@@ -761,7 +763,7 @@ if __name__ == '__main__':
     #trainer = Trainer(gpus=0, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
                       #accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True,
                       #callbacks=[checkpoint_callback])
-    trainer = Trainer(gpus=1, logger=logger,
+    trainer = Trainer(gpus=args.gpus, logger=logger,
                       default_root_dir=curexpdir, track_grad_norm=2,
                       accumulate_grad_batches=args.accumulate_grad_batches)
     trainer.fit(model, train_dataloader, val_dataloader)
