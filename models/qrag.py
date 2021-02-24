@@ -767,7 +767,7 @@ if __name__ == '__main__':
                       #callbacks=[checkpoint_callback])
     trainer = Trainer(gpus=args.gpus, logger=logger,
                       default_root_dir=curexpdir, track_grad_norm=2,
-                      accumulate_grad_batches=args.accumulate_grad_batches)
+                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp')
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
