@@ -704,7 +704,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--docs_sampling_temperature', type=float, default=1,
                                      help="Temperature used for sampling docs (Marginalized, ELBO)")
     training_args_group.add_argument('--lr', type=float, default=1e-6, help='Adam\'s Learning rate')
-    training_args_group.add_argument('--accumulate_grad_batches', type=float, default=16, help='Accumulate gradients for given number of batches')
+    training_args_group.add_argument('--accumulate_grad_batches', type=int, default=16, help='Accumulate gradients for given number of batches')
     training_args_group.add_argument('--doc_sampler', type=str, default='GuidedDocumentSampler',
                                      help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO)}')
 
@@ -731,7 +731,8 @@ if __name__ == '__main__':
         doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, doc_sampler)
+        val_doc_sampler = SimpleDocumentSampler(100, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
         assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler'
@@ -745,7 +746,9 @@ if __name__ == '__main__':
 
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, args.val_q_ranked_passages, doc_sampler)
+        val_doc_sampler = SimpleDocumentSampler(100, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler)
+        #val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, args.val_q_ranked_passages, doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     else:
         assert False, "loss_type not in {NLL, Marginalized, ELBO}"
