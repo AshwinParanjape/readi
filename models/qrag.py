@@ -29,6 +29,9 @@ from colbert.modeling.tokenization import QueryTokenizer, DocTokenizer
 from colbert.modeling.tokenization.utils import _sort_by_length, _split_into_batches
 from colbert.utils.utils import load_checkpoint
 
+node_rank = int(os.environ.get("NODE_RANK", 0))
+local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
 # Special tokens
 DOC_TOKEN = '[DOC]' # Separates input and doc when fed as context to the generator
 TEXT_TOKEN = '|' # Separates title and text
@@ -283,48 +286,38 @@ class GuidedDocumentSampler(DocumentSampler):
         return mixed_samples
 
 class Seq2SeqDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str):
+    def __init__(self, source_path: str, target_path: str, worker_id=0, n_workers=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:
-            self.worker_id = 0
-            self.n_workers = 1
-        else:
-            self.worker_id = worker_info.id
-            self.n_workers = worker_info.num_workers
+        self.worker_id = worker_id
+        self.n_workers = n_workers
 
     def __iter__(self):
         for qid, (source, target) in enumerate(zip(self.source['source'], self.target['target'])):
-            if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
+            if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
                 yield {'qid': qid,
                        'source': source,
                        'target': target,
                        }
 
     def __len__(self):
-        return len(self.source)
+        return len(self.source//self.n_workers)
 
 
 class PDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler):
+    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.cached_scores: Dict[int, Dict[int, float]] = defaultdict(dict)
         self.sampler = sampler
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:
-            self.worker_id = 0
-            self.n_workers = 1
-        else:
-            self.worker_id = worker_info.id
-            self.n_workers = worker_info.num_workers
+        self.worker_id = worker_id
+        self.n_workers = n_workers
 
     def __iter__(self):
         for qid, (source, target, (p_qid, p_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals)):
             #assert (qid == p_qid) , (qid, p_qid)
-            if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
+            if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
                 sampled_retrievals = self.sampler(p_retrievals)
                 yield {'qid': qid,
                         'source': source,
@@ -333,28 +326,23 @@ class PDataset(torch.utils.data.IterableDataset):
                         'doc_texts': sampled_retrievals['text'].tolist(),
                         }
     def __len__(self):
-        return len(self.source)
+        return len(self.source//self.n_workers)
 
 
 class PQDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler):
+    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
         self.sampler = sampler
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:
-            self.worker_id = 0
-            self.n_workers = 1
-        else:
-            self.worker_id = worker_info.id
-            self.n_workers = worker_info.num_workers
+        self.worker_id = worker_id
+        self.n_workers = n_workers
 
     def __iter__(self):
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
-            if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
+            if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
                 merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
                 sampled_retrievals = self.sampler(merged_retrievals)
                 yield {'qid': qid,
@@ -365,7 +353,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                  }
 
     def __len__(self):
-        return len(self.source)
+        return len(self.source//self.n_workers)
 
 
 # TODO: override collate function to simply collate tuples into a list
@@ -716,8 +704,6 @@ if __name__ == '__main__':
 
 
     Experiment.add_argument_group(parser)
-    node_rank = int(os.environ.get("NODE_RANK", 0))
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
     args = parser.parse_args()
     if node_rank ==0 and local_rank == 0:
         experiment = Experiment.from_parser(parser)
@@ -725,21 +711,24 @@ if __name__ == '__main__':
     else:
         curexpdir = os.path.join(args.experiments_directory, args.experiment_id)
 
+    # TODO: Currently only using local rank and args.ngpus
+    # The code won't work with multiple nodes, for which one needs to have a global rank and world size
+
 
     if args.loss_type == 'NLL':
         model = NLLLossSystem(lr = args.lr, expdir=curexpdir)
-        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path)
+        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
-        val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path)
+        val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
         assert args.doc_sampler == 'SimpleDocumentSampler'
         model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr)
         doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-        train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler)
+        train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(100, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
         assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler'
@@ -751,10 +740,10 @@ if __name__ == '__main__':
         else:
             assert False
 
-        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler)
+        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(100, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         #val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, args.val_q_ranked_passages, doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     else:
