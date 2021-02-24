@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.profiler import AdvancedProfiler
 from torch.utils.data import DataLoader
@@ -421,7 +422,7 @@ class ColBERTScorer(ColBERT):
         self.doc_tokenizer = DocTokenizer(self.doc_maxlen)
 
     def tensorize(self, queries, batched_docs):
-        docs = self.doc_tokenizer.tensorize([doc for docs in batched_docs for doc in docs])
+        docs = self.doc_tokenizer.tensorize([str(doc) for docs in batched_docs for doc in docs])
         queries = self.query_tokenizer.tensorize(queries)
         return queries, docs
 
@@ -754,8 +755,13 @@ if __name__ == '__main__':
         assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
-    #trainer = Trainer(gpus=1, logger=logger, default_root_dir=curexpdir, track_grad_norm=2, accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True)
-    trainer = Trainer(gpus=1, logger=logger, default_root_dir=curexpdir, track_grad_norm=2, accumulate_grad_batches=args.accumulate_grad_batches)
+    #checkpoint_callback = ModelCheckpoint(save_top_k=-1)
+    #trainer = Trainer(gpus=0, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
+                      #accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True,
+                      #callbacks=[checkpoint_callback])
+    trainer = Trainer(gpus=0, logger=logger,
+                      default_root_dir=curexpdir, track_grad_norm=2,
+                      accumulate_grad_batches=args.accumulate_grad_batches)
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
