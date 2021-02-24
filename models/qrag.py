@@ -240,7 +240,7 @@ class GuidedDocumentSampler(DocumentSampler):
             q_docs = retrievals[(retrievals['score_q'].notna())].copy()
             q_docs['score'] = q_docs['score_q']
             extra_samples = SimpleDocumentSampler(diff, self.temperature, self.top_k)(q_docs)
-            mixed_samples = pd.cat([mixed_samples, extra_samples])
+            mixed_samples = pd.concat([mixed_samples, extra_samples])
 
         return mixed_samples
 
