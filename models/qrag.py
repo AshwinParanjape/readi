@@ -632,7 +632,7 @@ def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_value
 
 
 if __name__ == '__main__':
-    
+
     parser = argparse.ArgumentParser(description='Script to jointly train retriever and generator')
     base_path = Path('/u/scr/ashwinp/research/readi')
     rerank_exp_base_path = Path('/scr/biggest/ashwinp/experiments/colbert-rerank/')
