@@ -301,7 +301,7 @@ class Seq2SeqDataset(torch.utils.data.IterableDataset):
                        }
 
     def __len__(self):
-        return len(self.source//self.n_workers)
+        return len(self.source)//self.n_workers
 
 
 class PDataset(torch.utils.data.IterableDataset):
@@ -326,7 +326,7 @@ class PDataset(torch.utils.data.IterableDataset):
                         'doc_texts': sampled_retrievals['text'].tolist(),
                         }
     def __len__(self):
-        return len(self.source//self.n_workers)
+        return len(self.source)//self.n_workers
 
 
 class PQDataset(torch.utils.data.IterableDataset):
@@ -353,7 +353,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                  }
 
     def __len__(self):
-        return len(self.source//self.n_workers)
+        return len(self.source)//self.n_workers
 
 
 # TODO: override collate function to simply collate tuples into a list
