@@ -718,6 +718,7 @@ if __name__ == '__main__':
     Experiment.add_argument_group(parser)
     node_rank = int(os.environ.get("NODE_RANK", 0))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    args = parser.parse_args()
     if node_rank ==0 and local_rank == 0:
         experiment = Experiment.from_parser(parser)
         curexpdir = experiment.curexpdir
@@ -725,7 +726,6 @@ if __name__ == '__main__':
         curexpdir = os.path.join(args.experiments_directory, args.experiment_id)
 
 
-    args = parser.parse_args()
     if args.loss_type == 'NLL':
         model = NLLLossSystem(lr = args.lr, expdir=curexpdir)
         train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path)
