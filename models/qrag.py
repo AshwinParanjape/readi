@@ -164,7 +164,9 @@ class ClosedSetRetrievals():
         with opener(self.path) as file:
             last_qid = None
             last_qid_retrievals = None
-            for chunk_df in pd.read_csv(file, sep='\t', chunksize=100000, names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'], header=0):
+            for chunk_df in pd.read_csv(file, sep='\t', chunksize=100000,
+                                        names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'],
+                                        header=0, dtype=str, na_filter=False):
                 for qid, retrievals in chunk_df.groupby('qid'):
                     retrievals['text'] = retrievals['title'].str.cat(retrievals['doc_text'], sep=f' {TEXT_TOKEN} ')
 
@@ -280,8 +282,8 @@ class GuidedDocumentSampler(DocumentSampler):
 
 class Seq2SeqDataset(torch.utils.data.IterableDataset):
     def __init__(self, source_path: str, target_path: str):
-        self.source = pd.read_csv(source_path, sep='\t', names=['source'])
-        self.target = pd.read_csv(target_path, sep='\t', names=['target'])
+        self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
+        self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is None:
             self.worker_id = 0
@@ -304,8 +306,8 @@ class Seq2SeqDataset(torch.utils.data.IterableDataset):
 
 class PDataset(torch.utils.data.IterableDataset):
     def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler):
-        self.source = pd.read_csv(source_path, sep='\t', names=['source'])
-        self.target = pd.read_csv(target_path, sep='\t', names=['target'])
+        self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
+        self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.cached_scores: Dict[int, Dict[int, float]] = defaultdict(dict)
         self.sampler = sampler
@@ -334,8 +336,8 @@ class PDataset(torch.utils.data.IterableDataset):
 
 class PQDataset(torch.utils.data.IterableDataset):
     def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler):
-        self.source = pd.read_csv(source_path, sep='\t', names=['source'])
-        self.target = pd.read_csv(target_path, sep='\t', names=['target'])
+        self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
+        self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
         self.sampler = sampler
@@ -721,8 +723,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     if args.loss_type == 'NLL':
-        model = NLLLossSystem(lr = args.lr)
-        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, expdir=curexpdir)
+        model = NLLLossSystem(lr = args.lr, expdir=curexpdir)
+        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
