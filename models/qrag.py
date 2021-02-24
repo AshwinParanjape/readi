@@ -620,7 +620,7 @@ class ELBOLossSystem(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
-def log_value(filename, stage, epoch, key, batch_idx, value):
+def log_value(filename, stage, epoch, batch_idx, key, value):
     with open(filename, 'a') as f:
         f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}\n')
 
@@ -671,6 +671,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--docs_sampling_temperature', type=float, default=1,
                                      help="Temperature used for sampling docs (Marginalized, ELBO)")
     training_args_group.add_argument('--lr', type=float, default=1e-6, help='Adam\'s Learning rate')
+    training_args_group.add_argument('--accumulate_grad_batches', type=float, default=16, help='Accumulate gradients for given number of batches')
 
     Experiment.add_argument_group(parser)
     node_rank = int(os.environ.get("NODE_RANK", 0))
@@ -709,7 +710,7 @@ if __name__ == '__main__':
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
     #trainer = Trainer(gpus=1, fast_dev_run=True, default_root_dir=curexpdir)
     #trainer.fit(model, train_dataloader, val_dataloader)
-    trainer = Trainer(gpus=1, logger=logger, default_root_dir=curexpdir, track_grad_norm=2)
+    trainer = Trainer(gpus=1, logger=logger, default_root_dir=curexpdir, track_grad_norm=2, accumulate_grad_batches=args.accumulate_grad_batches)
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
