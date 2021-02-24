@@ -209,6 +209,37 @@ class SimpleDocumentSampler(DocumentSampler):
         top_k_retrievals = retrievals.sort_values('probs', ascending=False)[:top_k]
         return top_k_retrievals.sample(n=n, weights='probs')
 
+class GuidedNoIntersectionDocumentSampler(DocumentSampler):
+    def __init__(self, n, temperature=1, top_k=None):
+        self.n = n
+        self.temperature=temperature
+        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        self.top_k = top_k
+        self.p_minus_q_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
+        self.q_minus_p_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
+
+    def __call__(self, retrievals: pd.DataFrame):
+        # retrievals has columns ['qid', 'pid', 'p_score', 'score_q', 'doc_text', 'title', 'text']
+        p_minus_q = retrievals[(retrievals['score_p'].notna()) & (retrievals['score_q'].isna())].copy()
+        p_minus_q['score'] = p_minus_q['score_p']
+        p_minus_q_samples = self.p_minus_q_sampler(p_minus_q)
+
+        q_minus_p = retrievals[(retrievals['score_q'].notna()) & (retrievals['score_p'].isna())].copy()
+        q_minus_p['score'] = q_minus_p['score_q']
+        q_minus_p_samples = self.q_minus_p_sampler(q_minus_p)
+
+        mixed_samples = pd.concat([p_minus_q_samples, q_minus_p_samples])
+
+        # If not enough samples were gotten (because some of the three sets not containing enough to sample from)
+        # Add a few more on an ad-hoc basis
+        if len(mixed_samples) < self.n:
+            diff = self.n - len(mixed_samples)
+            q_docs = retrievals[(retrievals['score_q'].notna())].copy()
+            q_docs['score'] = q_docs['score_q']
+            extra_samples = SimpleDocumentSampler(diff, self.temperature, self.top_k)(q_docs)
+            mixed_samples = pd.concat([mixed_samples, extra_samples])
+
+        return mixed_samples
 class GuidedDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
@@ -674,6 +705,8 @@ if __name__ == '__main__':
                                      help="Temperature used for sampling docs (Marginalized, ELBO)")
     training_args_group.add_argument('--lr', type=float, default=1e-6, help='Adam\'s Learning rate')
     training_args_group.add_argument('--accumulate_grad_batches', type=float, default=16, help='Accumulate gradients for given number of batches')
+    training_args_group.add_argument('--doc_sampler', type=str, default='GuidedDocumentSampler',
+                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO)}')
 
     Experiment.add_argument_group(parser)
     node_rank = int(os.environ.get("NODE_RANK", 0))
@@ -693,6 +726,7 @@ if __name__ == '__main__':
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
+        assert args.doc_sampler == 'SimpleDocumentSampler'
         model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr)
         doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler)
@@ -700,8 +734,15 @@ if __name__ == '__main__':
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
+        assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler'
         model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr)
-        doc_sampler = GuidedDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        if args.doc_sampler == 'GuidedDocumentSampler':
+            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
+            doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        else:
+            assert False
+
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, args.val_q_ranked_passages, doc_sampler)
@@ -710,8 +751,7 @@ if __name__ == '__main__':
         assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
-    #trainer = Trainer(gpus=1, fast_dev_run=True, default_root_dir=curexpdir)
-    #trainer.fit(model, train_dataloader, val_dataloader)
+    #trainer = Trainer(gpus=1, logger=logger, default_root_dir=curexpdir, track_grad_norm=2, accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True)
     trainer = Trainer(gpus=1, logger=logger, default_root_dir=curexpdir, track_grad_norm=2, accumulate_grad_batches=args.accumulate_grad_batches)
     trainer.fit(model, train_dataloader, val_dataloader)
 
