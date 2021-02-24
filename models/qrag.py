@@ -196,6 +196,8 @@ class SimpleDocumentSampler(DocumentSampler):
 
     def __call__(self, retrievals: pd.DataFrame):
         # retrievals has columns ['qid', 'pid', 'rank', 'score', 'doc_text', 'title', 'text']
+        if len(retrievals) == 0:
+            return retrievals
         if self.n > len(retrievals):
             print("Fewer retrievals than n", sys.stderr)
             n = len(retrievals)
