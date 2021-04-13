@@ -1,8 +1,10 @@
 import gzip
 import io
 import json
+import types
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import List, Tuple, Optional
 
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
@@ -37,6 +39,31 @@ DOC_TOKEN = '[DOC]' # Separates input and doc when fed as context to the generat
 TEXT_TOKEN = '|' # Separates title and text
 
 from pytorch_lightning.loggers.base import LightningLoggerBase, rank_zero_only
+
+def truncate_sequences_from_beginning_helper(
+    self,
+    ids: List[int],
+    pair_ids: Optional[List[int]] = None,
+    num_tokens_to_remove: int = 0,
+    truncation_strategy = "longest_first",
+    stride: int = 0,
+) -> Tuple[List[int], List[int], List[int]]:
+    """ Only truncates single sequences (doesn't work for pairs) and truncates from the beginning.
+    Ignores pair_ids, truncation_strategy"""
+
+    if num_tokens_to_remove <= 0:
+        return ids, pair_ids, []
+
+    overflowing_tokens = []
+    for _ in range(num_tokens_to_remove):
+        if not overflowing_tokens:
+            window_len = min(len(ids), stride + 1)
+        else:
+            window_len = 1
+        overflowing_tokens.extend(ids[:window_len])
+        ids = ids[1:]
+
+    return (ids, pair_ids, overflowing_tokens)
 
 class MeticulousLogger(LightningLoggerBase):
     def __init__(self, experiment):
@@ -408,9 +435,9 @@ class Generator(torch.nn.Module):
         return lm_output
 
 class ColBERTScorer(ColBERT):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, truncate_query_from_start=False, **kwargs):
         super().__init__(*args, **kwargs)
-        self.query_tokenizer = QueryTokenizer(self.query_maxlen)
+        self.query_tokenizer = QueryTokenizer(self.query_maxlen, truncate_from_start=truncate_query_from_start)
         self.doc_tokenizer = DocTokenizer(self.doc_maxlen)
 
     def tensorize(self, queries, batched_docs):
@@ -507,10 +534,11 @@ class ELBOFn(torch.nn.Module):
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
 
 class NLLLossSystem(pl.LightningModule):
-    def __init__(self, lr=1e-3) :
+    def __init__(self, lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.loss_fn = LM_NLL(self.generator)
         self.lr = lr
@@ -538,15 +566,18 @@ class NLLLossSystem(pl.LightningModule):
         return optimizer
 
 class MarginalizedLossSystem(pl.LightningModule):
-    def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3) :
+    def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
+        #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                          truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
-                                          doc_maxlen=doc_maxlen)
+                                          doc_maxlen=doc_maxlen,
+                                          )
         saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
         self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator)
@@ -586,19 +617,22 @@ class MarginalizedLossSystem(pl.LightningModule):
         return optimizer
 
 class ELBOLossSystem(pl.LightningModule):
-    def __init__(self, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3):
+    def __init__(self, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
+        #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                          truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen)
         saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
         self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
 
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                          truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen)
         saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
@@ -666,6 +700,7 @@ if __name__ == '__main__':
     scorer_group.add_argument('--p_scorer_checkpoint', default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
+    scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
 
     paths_group = parser.add_argument_group(title='input file paths')
     paths_group.add_argument('--train_source_path', type=str, default=(base_path / 'data/nq/train.source').as_posix(),
@@ -716,14 +751,14 @@ if __name__ == '__main__':
 
 
     if args.loss_type == 'NLL':
-        model = NLLLossSystem(lr = args.lr, expdir=curexpdir)
+        model = NLLLossSystem(lr = args.lr, expdir=curexpdir, truncate_query_from_start=args.truncate_query_from_start)
         train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
         assert args.doc_sampler == 'SimpleDocumentSampler'
-        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr)
+        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
         doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
@@ -732,7 +767,7 @@ if __name__ == '__main__':
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
         assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler'
-        model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr)
+        model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
