@@ -788,14 +788,13 @@ if __name__ == '__main__':
         assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
-    checkpoint_callback = ModelCheckpoint(monitor='val_loss', save_top_k=-1,filename="{epoch:02d}-{val_loss:.2f}")
-    trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
-                      accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True,
-                      callbacks=[checkpoint_callback])
-    trainer.fit(model, train_dataloader, val_dataloader)
+    checkpoint_callback = ModelCheckpoint(monitor=None, save_top_k=-1)
+    #trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
+    #                  accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True)#, callbacks=[checkpoint_callback])
+    #trainer.fit(model, train_dataloader, val_dataloader)
     trainer = Trainer(gpus=args.gpus, logger=logger,
                       default_root_dir=curexpdir, track_grad_norm=2,
-                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', callbacks=[checkpoint_callback], max_epochs=args.max_epochs)
+                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback])
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
