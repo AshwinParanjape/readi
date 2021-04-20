@@ -725,8 +725,10 @@ if __name__ == '__main__':
     training_args_group.add_argument('--batch_size', type=int, default=3, help='training batch size')
     training_args_group.add_argument('--loss_type', type=str, default='ELBO',
                                      help='Training loss to use. Choices: [NLL, Marginalized, ELBO]')
-    training_args_group.add_argument('--n_sampled_docs', type=int, default=8,
+    training_args_group.add_argument('--n_sampled_docs_train', type=int, default=8,
                                      help="Number of docs to sample for each instance (Marginalized, ELBO)")
+    training_args_group.add_argument('--n_sampled_docs_valid', type=int, default=100,
+                                     help="Number of docs to sample for each validation instance (Marginalized, ELBO)")
     training_args_group.add_argument('--docs_top_k', type=int, default=100,
                                      help="Sample from top_k docs (Marginalized, ELBO)")
     training_args_group.add_argument('--docs_sampling_temperature', type=float, default=1,
@@ -736,6 +738,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--gpus', type=int, default=1, help='Number of gpus to use')
     training_args_group.add_argument('--doc_sampler', type=str, default='GuidedDocumentSampler',
                                      help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO)}')
+    training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
 
 
     Experiment.add_argument_group(parser)
@@ -759,25 +762,25 @@ if __name__ == '__main__':
     elif args.loss_type == 'Marginalized':
         assert args.doc_sampler == 'SimpleDocumentSampler'
         model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
-        doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(100, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
         assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler'
         model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
         if args.doc_sampler == 'GuidedDocumentSampler':
-            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
-            doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         else:
             assert False
 
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(100, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         #val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, args.val_q_ranked_passages, doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
@@ -785,13 +788,14 @@ if __name__ == '__main__':
         assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
-    #checkpoint_callback = ModelCheckpoint(save_top_k=-1)
-    #trainer = Trainer(gpus=0, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
-                      #accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True,
-                      #callbacks=[checkpoint_callback])
+    checkpoint_callback = ModelCheckpoint(monitor='val_loss', save_top_k=-1,filename="{epoch:02d}-{val_loss:.2f}")
+    trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
+                      accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True,
+                      callbacks=[checkpoint_callback])
+    trainer.fit(model, train_dataloader, val_dataloader)
     trainer = Trainer(gpus=args.gpus, logger=logger,
                       default_root_dir=curexpdir, track_grad_norm=2,
-                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp')
+                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', callbacks=[checkpoint_callback], max_epochs=args.max_epochs)
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
