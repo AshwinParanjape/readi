@@ -80,6 +80,7 @@ def generate():
     scorer_group.add_argument('--p_scorer_checkpoint', default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
+    scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
 
     paths_group = parser.add_argument_group(title='input file paths')
     paths_group.add_argument('--source_path', type=str, default=(base_path / 'data/wow-kilt/val.source').as_posix(),
