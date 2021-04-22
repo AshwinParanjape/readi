@@ -98,14 +98,14 @@ def generate():
                                      help="Sample from top_k docs (Marginalized, ELBO)")
     decoding_group.add_argument('--docs_sampling_temperature', type=float, default=1,
                                      help="Temperature used for sampling docs (Marginalized, ELBO)")
-    decoding_group.add_argument('--batch_size', type=float, default=1,
+    decoding_group.add_argument('--batch_size', type=int, default=1,
                                 help="Number of source strings used at a time")
 
-    #Experiment.add_argument_group(parser)
+    Experiment.add_argument_group(parser)
     args = parser.parse_args()
-    #experiment = Experiment.from_parser(parser)
-    curexpdir = './'
-    #curexpdir = experiment.curexpdir
+    experiment = Experiment.from_parser(parser)
+    #curexpdir = './'
+    curexpdir = experiment.curexpdir
     #state_dict = torch.load(args.checkpoint, map_location=torch.device('cpu'))['state_dict']
     #_generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base",
     #                                                               force_bos_token_to_be_generated=True)

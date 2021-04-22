@@ -563,13 +563,14 @@ class ELBOFn(torch.nn.Module):
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
 
 class NLLLossSystem(pl.LightningModule):
-    def __init__(self, lr=1e-3, truncate_query_from_start=False) :
+    def __init__(self, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.loss_fn = LM_NLL(self.generator)
+        self.expdir=expdir
         self.lr = lr
         with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
@@ -582,13 +583,14 @@ class NLLLossSystem(pl.LightningModule):
 
         return output.sum()
 
-    def training_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output = self.loss_fn(batch['source'], batch['target'])
 
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'loss', output.sum())
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.sum())
 
         return output.sum()
+
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -817,14 +819,13 @@ if __name__ == '__main__':
         assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
-    checkpoint_callback = ModelCheckpoint(monitor='val_loss', save_top_k=-1,filename="{epoch:02d}-{val_loss:.2f}")
-    trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
-                      accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True,
-                      callbacks=[checkpoint_callback])
-    trainer.fit(model, train_dataloader, val_dataloader)
+    checkpoint_callback = ModelCheckpoint(monitor=None, save_top_k=-1)
+    #trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
+    #                  accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True)#, callbacks=[checkpoint_callback])
+    #trainer.fit(model, train_dataloader, val_dataloader)
     trainer = Trainer(gpus=args.gpus, logger=logger,
                       default_root_dir=curexpdir, track_grad_norm=2,
-                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', callbacks=[checkpoint_callback], max_epochs=args.max_epochs)
+                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback])
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
