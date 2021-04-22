@@ -14,6 +14,7 @@ from pytorch_lightning.profiler import AdvancedProfiler
 from torch.utils.data import DataLoader
 from transformers import BartForConditionalGeneration, BartTokenizer, BertPreTrainedModel, BertModel, BertTokenizerFast, \
     BatchEncoding
+from transformers.file_utils import ModelOutput
 from transformers.modeling_outputs import Seq2SeqLMOutput
 import string
 import sys, os
@@ -334,7 +335,12 @@ class Seq2SeqDataset(torch.utils.data.IterableDataset):
 class PDataset(torch.utils.data.IterableDataset):
     def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
-        self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
+        if target_path:
+            self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
+        else:
+            self.target = pd.DataFrame()
+            self.target['target'] = self.source['source'] # To quickly get the same shape
+            self.target['target'] = ''
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.cached_scores: Dict[int, Dict[int, float]] = defaultdict(dict)
         self.sampler = sampler
@@ -403,7 +409,20 @@ class Generator(torch.nn.Module):
         self.generator = generator
         self.tokenizer = tokenizer
 
-    def prepare_generator_inputs(self, sources, targets, batched_docs=None):
+    def prepare_generator_inputs(self, sources, batched_docs=None):
+        if batched_docs:
+            generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in
+                                docs]
+        else:
+            generator_inputs = [f'{source}' for source in sources]
+
+        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True,
+                                                       max_length=256, pad_to_multiple_of=8)
+        input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in
+                               input_encoding.data.items()}
+        return input_encoding
+
+    def prepare_training_inputs(self, sources, targets, batched_docs=None):
         if batched_docs:
             generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in docs]
             generator_outputs = [f'{target}' for target, docs in zip(targets, batched_docs) for doc in docs]
@@ -428,11 +447,21 @@ class Generator(torch.nn.Module):
         return lm_output
 
     def forward(self, sources, targets, batched_docs=None):
-        input_encoding, output_encoding = self.prepare_generator_inputs(sources, targets, batched_docs)
+        input_encoding, output_encoding = self.prepare_training_inputs(sources, targets, batched_docs)
         lm_output = self.get_target_logits(input_encoding, output_encoding)
         lm_output.input_encoding = input_encoding
         lm_output.output_encoding = output_encoding
         return lm_output
+
+    def generate(self, sources, batched_docs=None, **generation_kwargs)->ModelOutput:
+        input_encoding = self.prepare_generator_inputs(sources, batched_docs)
+        output = self.generator.generate(input_ids=input_encoding['input_ids'],
+                                        attention_mask=input_encoding['attention_mask'],
+                                         return_dict_in_generate=True, output_scores=True, do_sample=True,
+                                        **generation_kwargs)
+        decoded_output = self.tokenizer.batch_decode(output.sequences)
+        output.strings = decoded_output
+        return output
 
 class ColBERTScorer(ColBERT):
     def __init__(self, *args, truncate_query_from_start=False, **kwargs):
