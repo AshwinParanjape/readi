@@ -600,7 +600,7 @@ class ELBOFn(torch.nn.Module):
 class NLLLossSystem(pl.LightningModule):
     def __init__(self, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
-        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
+        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         self.generator = Generator(self._generator, self._generator_tokenizer)
@@ -634,7 +634,7 @@ class NLLLossSystem(pl.LightningModule):
 class MarginalizedLossSystem(pl.LightningModule):
     def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
-        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
+        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
@@ -685,7 +685,7 @@ class MarginalizedLossSystem(pl.LightningModule):
 class ELBOLossSystem(pl.LightningModule):
     def __init__(self, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
         super().__init__()
-        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
+        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
