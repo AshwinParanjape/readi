@@ -437,6 +437,7 @@ class Generator(torch.nn.Module):
         output_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in output_encoding.data.items()}
         return input_encoding, output_encoding
 
+
     def get_target_logits(self, input_encoding, output_encoding):
         lm_output : Seq2SeqLMOutput = self.generator(
             input_ids = input_encoding['input_ids'],
@@ -453,15 +454,49 @@ class Generator(torch.nn.Module):
         lm_output.output_encoding = output_encoding
         return lm_output
 
+
     def generate(self, sources, batched_docs=None, **generation_kwargs)->ModelOutput:
         input_encoding = self.prepare_generator_inputs(sources, batched_docs)
-        output = self.generator.generate(input_ids=input_encoding['input_ids'],
+        generator_output = self.generator.generate(input_ids=input_encoding['input_ids'],
                                         attention_mask=input_encoding['attention_mask'],
-                                         return_dict_in_generate=True, output_scores=True, do_sample=True,
+                                         return_dict_in_generate=True, do_sample=True, num_beams=1,
                                         **generation_kwargs)
-        decoded_output = self.tokenizer.batch_decode(output.sequences)
-        output.strings = decoded_output
-        return output
+        # Use the following to generate based on pure sampling and verify that the same probabilities are computed by
+        # the rescorer as well
+        #generator_output = self.generator.generate(input_ids=input_encoding['input_ids'],
+        #                                                    attention_mask=input_encoding['attention_mask'],
+        #                                                    return_dict_in_generate=True, output_scores=True, do_sample=True, num_beams=1,
+        #                                                    no_repeat_ngram_size=0,
+        #                                                    min_length=-1,
+        #                                                    forced_eos_token_id=None,
+        #                                                    top_k=0,
+        #                                                    **generation_kwargs)
+        generator_output.log_liklihood = self.rescore_from_tensors(input_encoding, generator_output, generation_kwargs.get('num_return_sequences', 1))
+        decoded_output = self.tokenizer.batch_decode(generator_output.sequences)
+        generator_output.strings = decoded_output
+        generator_output.input_encoding = input_encoding
+        return generator_output
+
+    def rescore_from_tensors(self, input_encoding, generator_output, n_samples_per_doc):
+        """
+        This function computes the raw probabilities as assigned by the generator (tested with BartForConditionalGeneration)
+        This is useful because the scores returned by generate are affected by warping and beam search, also useful
+        for rescoring with another model that wasn't use to generate the sequences
+        """
+        rescorer_output = self.generator(qinput_ids=input_encoding['input_ids'].repeat_interleave(repeats=n_samples_per_doc, dim=0),
+                                         attention_mask=input_encoding['attention_mask'].repeat_interleave(repeats=8, dim=0),
+                                         decoder_input_ids=generator_output.sequences[:, :-1])
+        rescorer_log_softmax=torch.log_softmax(rescorer_output.logits, dim=2)
+        not_pad = generator_output.sequences[:, 1:-1]!=self.generator.config.pad_token_id
+        rescorer_ll = not_pad * rescorer_log_softmax.gather(dim=2, index=generator_output.sequences[:, 1:-1].unsqueeze(2)).squeeze(2)
+        rescorer_seq_ll = rescorer_ll.sum(dim=1)
+
+        # To verify if the rescorer probs are correct, do pure sampling in the generator (uncomment lines in generate
+        # function) and uncomment the following lines to get generator scores in the same form as rescorer_seq_ll
+        #generator_log_softmax=torch.log_softmax(torch.stack(generator_output.scores).permute(1,0,2), dim=2)
+        #generator_ll = not_pad * generator_log_softmax[:, :-1, :].gather(dim=2, index=generator_output.sequences[:, 1:-1].unsqueeze(2)).squeeze(2)
+        #generator_seq_ll = generator_ll.sum(dim=1)
+        return rescorer_seq_ll
 
 class ColBERTScorer(ColBERT):
     def __init__(self, *args, truncate_query_from_start=False, **kwargs):

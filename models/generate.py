@@ -20,7 +20,7 @@ class TargetGenerator(pl.LightningModule):
         self.do_sample = do_sample
         self.num_return_sequences_per_doc = num_return_sequences_per_doc
         self.expdir = expdir
-        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base", force_bos_token_to_be_generated=True)
+        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")#, force_bos_token_to_be_generated=True)
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
@@ -57,16 +57,30 @@ class TargetGenerator(pl.LightningModule):
         generated_output = self(batch)
         output_strings = generated_output.strings
         string_idx = 0
+        overall_doc_idx = 0
         with open(Path(self.expdir)/ Path('generations.tsv'), 'a') as f:
             for qid, doc_ids, doc_scores, source, docs in zip(batch['qid'], batch['doc_ids'], batched_doc_scores, sources, batched_docs):
                 instance = {'qid': qid, 'source': source, 'retrievals': []}
                 for doc_id, doc, doc_score in zip(doc_ids, docs, doc_scores):
-                    doc_gens = {'doc_id': doc_id, 'doc_text': doc, 'doc_score': doc_score, 'generations': []}
-                    for gen_id in range(self.num_return_sequences_per_doc):
-                        #f.write(f'{qid}\t{doc_id}\t{doc_score}\t{source}\t{output_strings[string_idx]}\t{doc}\n')
-                        doc_gens['generations'].append()
-                        string_idx+=1
-                    instance.retrievals.append(doc_gens)
+                    doc_gens = {'doc_id': doc_id, 'doc_text': doc, 'doc_score': doc_score, 'generator_output': []}
+                    input_ids = generated_output.input_encoding['input_ids'][overall_doc_idx, :]
+                    attention_mask = generated_output.input_encoding['attention_mask'][overall_doc_idx, :]
+                    sequences = generated_output.sequences[overall_doc_idx*self.num_return_sequences_per_doc:
+                                                           (overall_doc_idx+1)*self.num_return_sequences_per_doc, :]
+                    strings = generated_output.strings[overall_doc_idx*self.num_return_sequences_per_doc:
+                                                           (overall_doc_idx+1)*self.num_return_sequences_per_doc]
+                    log_liklihood = generated_output.log_liklihood[overall_doc_idx*self.num_return_sequences_per_doc:
+                                                           (overall_doc_idx+1)*self.num_return_sequences_per_doc]
+                    doc_gens['generator_output'] = {
+                        'input_ids': input_ids,
+                        'attention_mask': attention_mask,
+                        'sequences': sequences,
+                        'strings': strings,
+                        'log_liklihood': log_liklihood
+                    }
+
+                    instance['retrievals'].append(doc_gens)
+                    overall_doc_idx+=1
             self.instances.append(instance)
         return generated_output
 
@@ -98,14 +112,14 @@ def generate():
                                      help="Sample from top_k docs (Marginalized, ELBO)")
     decoding_group.add_argument('--docs_sampling_temperature', type=float, default=1,
                                      help="Temperature used for sampling docs (Marginalized, ELBO)")
-    decoding_group.add_argument('--batch_size', type=int, default=1,
+    decoding_group.add_argument('--batch_size', type=int, default=8,
                                 help="Number of source strings used at a time")
 
-    Experiment.add_argument_group(parser)
+    #Experiment.add_argument_group(parser)
     args = parser.parse_args()
-    experiment = Experiment.from_parser(parser)
-    #curexpdir = './'
-    curexpdir = experiment.curexpdir
+    #experiment = Experiment.from_parser(parser)
+    curexpdir = './'
+    #curexpdir = experiment.curexpdir
     #state_dict = torch.load(args.checkpoint, map_location=torch.device('cpu'))['state_dict']
     #_generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base",
     #                                                               force_bos_token_to_be_generated=True)
