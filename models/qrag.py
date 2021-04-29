@@ -805,6 +805,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--doc_sampler', type=str, default='GuidedDocumentSampler',
                                      help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO)}')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
+    training_args_group.add_argument('--resume_from_checkpoint', type=str, help="Optional, if given, loads the scorers and generator from the checkpoint. Resumes training using the resumed pytorch lightning trainer.resumed ")
 
 
     Experiment.add_argument_group(parser)
@@ -858,9 +859,14 @@ if __name__ == '__main__':
     #trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
     #                  accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True)#, callbacks=[checkpoint_callback])
     #trainer.fit(model, train_dataloader, val_dataloader)
-    trainer = Trainer(gpus=args.gpus, logger=logger,
-                      default_root_dir=curexpdir, track_grad_norm=2,
-                      accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback])
+    if args.resume_from_checkpoint:
+        print("Overriding the model using the checkpoint")
+        trainer = Trainer(resume_from_checkpoint=args.resume_from_checkpoint)
+        trainer.max_epochs = trainer.curent_epoch+args.max_epochs
+    else:
+        trainer = Trainer(gpus=args.gpus, logger=logger,
+                          default_root_dir=curexpdir, track_grad_norm=2,
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback])
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
