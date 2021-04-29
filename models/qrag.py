@@ -223,6 +223,21 @@ class DocumentSampler:
     def __call__(self, retrievals):
         raise NotImplementedError("Sampler needs to implement __call__method")
 
+class RandomDocumentSampler(DocumentSampler):
+    def __init__(self, n):
+        self.n = n
+
+    def __call__(self, retrievals: pd.DataFrame):
+        # retrievals has columns ['qid', 'pid', 'rank', 'score', 'doc_text', 'title', 'text']
+        if len(retrievals) == 0:
+            return retrievals
+        if self.n > len(retrievals):
+            print("Fewer retrievals than n", sys.stderr)
+            n = len(retrievals)
+        else:
+            n= self.n
+
+        return retrievals.sample(n=n)
 class SimpleDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
@@ -282,12 +297,13 @@ class GuidedDocumentSampler(DocumentSampler):
         self.temperature=temperature
         assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
-        self.p_intersection_q_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
+        self.p_intersection_q_sampler = SimpleDocumentSampler(self.n//4, self.temperature, self.top_k)
         self.p_minus_q_sampler = SimpleDocumentSampler(self.n//4, self.temperature, self.top_k)
         self.q_minus_p_sampler = SimpleDocumentSampler(self.n//4, self.temperature, self.top_k)
+        self.random_sampler = RandomDocumentSampler(self.n//4)
 
-    def __call__(self, retrievals: pd.DataFrame):
-        # retrievals has columns ['qid', 'pid', 'p_score', 'score_q', 'doc_text', 'title', 'text']
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
         p_intersection_q = retrievals[(retrievals['score_p'].notna()) & (retrievals['score_q'].notna())].copy()
         p_intersection_q['score'] = p_intersection_q['score_q']
         p_intersection_q_samples = self.p_intersection_q_sampler(p_intersection_q)
@@ -300,7 +316,9 @@ class GuidedDocumentSampler(DocumentSampler):
         q_minus_p['score'] = q_minus_p['score_q']
         q_minus_p_samples = self.q_minus_p_sampler(q_minus_p)
 
-        mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples])
+        unrelated_samples = self.random_sampler(unrelated_retrievals)
+
+        mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, unrelated_samples])
 
         # If not enough samples were gotten (because some of the three sets not containing enough to sample from)
         # Add a few more on an ad-hoc basis
@@ -309,7 +327,7 @@ class GuidedDocumentSampler(DocumentSampler):
             q_docs = retrievals[(retrievals['score_q'].notna())].copy()
             q_docs['score'] = q_docs['score_q']
             extra_samples = SimpleDocumentSampler(diff, self.temperature, self.top_k)(q_docs)
-            mixed_samples = pd.concat([mixed_samples, extra_samples])
+            mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, extra_samples, unrelated_samples])
 
         return mixed_samples
 
@@ -368,6 +386,13 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
+        merged_samples_list = []
+        for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
+            p_samples = p_retrievals.sample(n=1)
+            q_samples = q_retrievals.sample(n=1)
+            merged_samples = p_samples.merge(q_samples, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
+            merged_samples_list.append(merged_samples)
+        self.unrelated_retrievals = pd.concat(merged_samples_list)
         self.sampler = sampler
         self.worker_id = worker_id
         self.n_workers = n_workers
@@ -377,7 +402,7 @@ class PQDataset(torch.utils.data.IterableDataset):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
                 merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
-                sampled_retrievals = self.sampler(merged_retrievals)
+                sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
                 yield {'qid': qid,
                         'source': source,
                         'target': target,
