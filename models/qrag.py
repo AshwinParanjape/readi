@@ -239,6 +239,7 @@ class RandomDocumentSampler(DocumentSampler):
             n= self.n
 
         return retrievals.sample(n=n)
+
 class SimpleDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
@@ -292,6 +293,43 @@ class GuidedNoIntersectionDocumentSampler(DocumentSampler):
             mixed_samples = pd.concat([mixed_samples, extra_samples])
 
         return mixed_samples
+
+class RankPNDocumentSampler(DocumentSampler):
+    def __init__(self, n, kP=20, kQ1=20, kQ2=50, positives_cutoff=3):
+        assert kQ1 <= kQ2, "Positives should be a subset of protected"
+        self.n = n
+        self.kP = kP
+        self.kQ1 = kQ1
+        self.kQ2 = kQ2
+        self.positives_cutoff = max(positives_cutoff, self.n//4+1) #at least one more than the number of positive samples desired
+        self.positives_sampler = RandomDocumentSampler(self.n//4)
+        self.negatives_sampler = RandomDocumentSampler(self.n//2-1)
+        self.random_sampler = RandomDocumentSampler(1)
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        protected_indices = (retrievals['rank_p'] <= self.kP) | (retrievals['rank_q'] <= self.kQ1)
+        positives = retrievals[(retrievals['rank_p'] <= self.kP) & (retrievals['rank_q'] <= self.kQ2)]
+        if len(positives) == 0:
+            return None
+
+        positives = positives.sort_values('rank_p')[:self.positives_cutoff]
+        positive_samples = self.positives_sampler(positives)
+
+        negatives = retrievals[~(protected_indices) & retrievals['rank_p'].notna()]
+        negative_samples = self.negatives_sampler(negatives)
+
+        if unrelated_samples:
+            unrelated_samples = self.random_sampler(unrelated_retrievals)
+            mixed_samples = pd.concat([positive_samples, negative_samples, unrelated_samples])
+        else:
+            mixed_samples = pd.concat([positive_samples, negative_samples])
+        diff = self.n - len(mixed_samples)
+        if diff > 0:
+            extra_samples = RandomDocumentSampler(diff)(negatives)
+            mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples, unrelated_samples])
+        print(mixed_samples)
+        return mixed_samples
+
 class GuidedDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
@@ -317,9 +355,12 @@ class GuidedDocumentSampler(DocumentSampler):
         q_minus_p['score'] = q_minus_p['score_q']
         q_minus_p_samples = self.q_minus_p_sampler(q_minus_p)
 
-        unrelated_samples = self.random_sampler(unrelated_retrievals)
+        if unrelated_retrievals:
+            unrelated_samples = self.random_sampler(unrelated_retrievals)
+            mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, unrelated_samples])
+        else:
+            mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples])
 
-        mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, unrelated_samples])
 
         # If not enough samples were gotten (because some of the three sets not containing enough to sample from)
         # Add a few more on an ad-hoc basis
@@ -405,7 +446,10 @@ class PQDataset(torch.utils.data.IterableDataset):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
                 merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
-                sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
+                #sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
+                sampled_retrievals = self.sampler(merged_retrievals)
+                if sampled_retrievals is None:
+                    continue
                 yield {'qid': qid,
                         'source': source,
                         'target': target,
@@ -831,7 +875,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--accumulate_grad_batches', type=int, default=16, help='Accumulate gradients for given number of batches')
     training_args_group.add_argument('--gpus', type=int, default=1, help='Number of gpus to use')
     training_args_group.add_argument('--doc_sampler', type=str, default='GuidedDocumentSampler',
-                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO)}')
+                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--resume_from_checkpoint', type=str, help="Optional, if given, loads the scorers and generator from the checkpoint. Resumes training using the resumed pytorch lightning trainer.resumed ")
 
@@ -864,12 +908,14 @@ if __name__ == '__main__':
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
-        assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler'
+        assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler' or args.doc_sampler == 'RankPNDocumentSampler'
         model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
             doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        elif args.doc_sampler == 'RankPNDocumentSampler':
+            doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         else:
             assert False
 
