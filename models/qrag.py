@@ -326,7 +326,11 @@ class RankPNDocumentSampler(DocumentSampler):
         diff = self.n - len(mixed_samples)
         if diff > 0:
             extra_samples = RandomDocumentSampler(diff)(negatives)
-            mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples, unrelated_samples])
+            if unrelated_retrievals:
+                mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples, unrelated_samples])
+            else:
+                mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples])
+
         print(mixed_samples)
         return mixed_samples
 
