@@ -318,7 +318,7 @@ class RankPNDocumentSampler(DocumentSampler):
         negatives = retrievals[~(protected_indices) & retrievals['rank_p'].notna()]
         negative_samples = self.negatives_sampler(negatives)
 
-        if unrelated_retrievals:
+        if unrelated_retrievals is not None:
             unrelated_samples = self.random_sampler(unrelated_retrievals)
             mixed_samples = pd.concat([positive_samples, negative_samples, unrelated_samples])
         else:
@@ -326,7 +326,7 @@ class RankPNDocumentSampler(DocumentSampler):
         diff = self.n - len(mixed_samples)
         if diff > 0:
             extra_samples = RandomDocumentSampler(diff)(negatives)
-            if unrelated_retrievals:
+            if unrelated_retrievals is not None:
                 mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples, unrelated_samples])
             else:
                 mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples])
@@ -359,7 +359,7 @@ class GuidedDocumentSampler(DocumentSampler):
         q_minus_p['score'] = q_minus_p['score_q']
         q_minus_p_samples = self.q_minus_p_sampler(q_minus_p)
 
-        if unrelated_retrievals:
+        if unrelated_retrievals is not None:
             unrelated_samples = self.random_sampler(unrelated_retrievals)
             mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, unrelated_samples])
         else:
