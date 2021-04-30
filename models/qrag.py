@@ -444,6 +444,7 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.sampler = sampler
         self.worker_id = worker_id
         self.n_workers = n_workers
+        self.skipped_instances = 0
 
     def __iter__(self):
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
@@ -453,6 +454,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                 sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
                 #sampled_retrievals = self.sampler(merged_retrievals)
                 if sampled_retrievals is None:
+                    self.skipped_instances+=1
                     continue
                 yield {'qid': qid,
                         'source': source,
@@ -468,7 +470,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                     self.unrelated_retrievals = merged_retrievals.sample(n=2)
 
     def __len__(self):
-        return len(self.source)//self.n_workers
+        return (len(self.source)//self.n_workers)-self.skipped_instances
 
 
 # TODO: override collate function to simply collate tuples into a list
@@ -952,7 +954,7 @@ if __name__ == '__main__':
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback])
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=10)
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
