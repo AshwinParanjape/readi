@@ -432,15 +432,15 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
-        #p_samples_list = []
-        #q_samples_list = []
-        #for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
-        #    p_samples_list.append(p_retrievals.sample(n=1))
-        #    q_samples_list.append(q_retrievals.sample(n=1))
+        p_samples_list = []
+        q_samples_list = []
+        for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
+            p_samples_list.append(p_retrievals.sample(n=1))
+            q_samples_list.append(q_retrievals.sample(n=1))
 
-        #p_samples = pd.concat(p_samples_list)
-        #q_samples = pd.concat(q_samples_list)
-        #self.unrelated_retrievals = p_samples.merge(q_samples, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
+        p_samples = pd.concat(p_samples_list)
+        q_samples = pd.concat(q_samples_list)
+        self.unrelated_retrievals = p_samples.merge(q_samples, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
         self.sampler = sampler
         self.worker_id = worker_id
         self.n_workers = n_workers
@@ -450,8 +450,8 @@ class PQDataset(torch.utils.data.IterableDataset):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
                 merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
-                #sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
-                sampled_retrievals = self.sampler(merged_retrievals)
+                sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
+                #sampled_retrievals = self.sampler(merged_retrievals)
                 if sampled_retrievals is None:
                     continue
                 yield {'qid': qid,
