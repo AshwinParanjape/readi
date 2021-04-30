@@ -461,7 +461,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                         'doc_texts': sampled_retrievals['text'].tolist()
                  }
                 if self.unrelated_retrievals is not None:
-                    self.unrelated_retrievals = pd.concat(self.unrelated_retrievals, merged_retrievals.sample(n=10))
+                    self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
                     if len(self.unrelated_retrievals)>2000:
                         self.unrelated_retrievals.sample(2000)
                 else:
