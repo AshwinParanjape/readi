@@ -331,7 +331,6 @@ class RankPNDocumentSampler(DocumentSampler):
             else:
                 mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples])
 
-        print(mixed_samples)
         return mixed_samples
 
 class GuidedDocumentSampler(DocumentSampler):
