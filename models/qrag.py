@@ -318,7 +318,7 @@ class RankPNDocumentSampler(DocumentSampler):
         negatives = retrievals[~(protected_indices) & retrievals['rank_p'].notna()]
         negative_samples = self.negatives_sampler(negatives)
 
-        if unrelated_samples:
+        if unrelated_retrievals:
             unrelated_samples = self.random_sampler(unrelated_retrievals)
             mixed_samples = pd.concat([positive_samples, negative_samples, unrelated_samples])
         else:
