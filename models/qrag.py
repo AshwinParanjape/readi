@@ -431,15 +431,16 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
-        p_samples_list = []
-        q_samples_list = []
-        for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
-            p_samples_list.append(p_retrievals.sample(n=1))
-            q_samples_list.append(q_retrievals.sample(n=1))
+        #p_samples_list = []
+        #q_samples_list = []
+        #for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
+        #    p_samples_list.append(p_retrievals.sample(n=1))
+        #    q_samples_list.append(q_retrievals.sample(n=1))
 
-        p_samples = pd.concat(p_samples_list)
-        q_samples = pd.concat(q_samples_list)
-        self.unrelated_retrievals = p_samples.merge(q_samples, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
+        #p_samples = pd.concat(p_samples_list)
+        #q_samples = pd.concat(q_samples_list)
+        #self.unrelated_retrievals = p_samples.merge(q_samples, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
+        self.unrelated_retrievals = None
         self.sampler = sampler
         self.worker_id = worker_id
         self.n_workers = n_workers
@@ -459,6 +460,12 @@ class PQDataset(torch.utils.data.IterableDataset):
                         'doc_ids': sampled_retrievals['pid'].tolist(),
                         'doc_texts': sampled_retrievals['text'].tolist()
                  }
+                if self.unrelated_retrievals is not None:
+                    self.unrelated_retrievals = pd.concat(self.unrelated_retrievals, merged_retrievals.sample(n=10))
+                    if len(self.unrelated_retrievals)>2000:
+                        self.unrelated_retrievals.sample(2000)
+                else:
+                    self.unrelated_retrievals = merged_retrievals.sample(n=2)
 
     def __len__(self):
         return len(self.source)//self.n_workers
