@@ -309,8 +309,8 @@ class RankPNDocumentSampler(DocumentSampler):
     def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
         protected_indices = (retrievals['rank_p'] <= self.kP) | (retrievals['rank_q'] <= self.kQ1)
         positives = retrievals[(retrievals['rank_p'] <= self.kP) & (retrievals['rank_q'] <= self.kQ2)]
-        if len(positives) == 0:
-            return None
+        #if len(positives) == 0:
+        #    return None
 
         positives = positives.sort_values('rank_p')[:self.positives_cutoff]
         positive_samples = self.positives_sampler(positives)
