@@ -469,8 +469,8 @@ class PQDataset(torch.utils.data.IterableDataset):
                 else:
                     self.unrelated_retrievals = merged_retrievals.sample(n=2)
 
-    def __len__(self):
-        return (len(self.source)//self.n_workers)-self.skipped_instances
+    #def __len__(self):
+    #    return (len(self.source)//self.n_workers)-self.skipped_instances
 
 
 # TODO: override collate function to simply collate tuples into a list
