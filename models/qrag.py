@@ -706,7 +706,7 @@ class NLLLossSystem(pl.LightningModule):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output = self.loss_fn(batch['source'], batch['target'])
 
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.sum())
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'valid', self.current_epoch, batch_idx, 'loss', output.sum())
 
         return output.sum()
 
