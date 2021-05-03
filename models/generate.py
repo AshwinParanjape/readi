@@ -174,7 +174,7 @@ def generate():
     val_dataset = PDataset(args.source_path, args.target_path, args.p_ranked_passages, doc_sampler, worker_id=0, n_workers=1)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
-    trainer = Trainer(gpus=1, default_root_dir=curexpdir, limit_test_batches=5)
+    trainer = Trainer(gpus=1, default_root_dir=curexpdir)
     trainer.test(model, test_dataloaders=val_dataloader)
     with open(Path(curexpdir)/'generations.pkl', 'wb') as f:
         pkl.dump(model.instances, f)
