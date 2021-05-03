@@ -309,8 +309,8 @@ class RankPNDocumentSampler(DocumentSampler):
     def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
         protected_indices = (retrievals['rank_p'] <= self.kP) | (retrievals['rank_q'] <= self.kQ1)
         positives = retrievals[(retrievals['rank_p'] <= self.kP) & (retrievals['rank_q'] <= self.kQ2)]
-        if len(positives) == 0:
-            return None
+        #if len(positives) == 0:
+        #    return None
 
         positives = positives.sort_values('rank_p')[:self.positives_cutoff]
         positive_samples = self.positives_sampler(positives)
@@ -431,27 +431,30 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
-        p_samples_list = []
-        q_samples_list = []
-        for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
-            p_samples_list.append(p_retrievals.sample(n=1))
-            q_samples_list.append(q_retrievals.sample(n=1))
+        #p_samples_list = []
+        #q_samples_list = []
+        #for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
+        #    p_samples_list.append(p_retrievals.sample(n=1))
+        #    q_samples_list.append(q_retrievals.sample(n=1))
 
-        p_samples = pd.concat(p_samples_list)
-        q_samples = pd.concat(q_samples_list)
-        self.unrelated_retrievals = p_samples.merge(q_samples, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
+        #p_samples = pd.concat(p_samples_list)
+        #q_samples = pd.concat(q_samples_list)
+        #self.unrelated_retrievals = p_samples.merge(q_samples, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
+        self.unrelated_retrievals = None
         self.sampler = sampler
         self.worker_id = worker_id
         self.n_workers = n_workers
+        self.skipped_instances = 0
 
     def __iter__(self):
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
-            if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
+            if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
                 merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
                 sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
                 #sampled_retrievals = self.sampler(merged_retrievals)
                 if sampled_retrievals is None:
+                    self.skipped_instances+=1
                     continue
                 yield {'qid': qid,
                         'source': source,
@@ -459,9 +462,15 @@ class PQDataset(torch.utils.data.IterableDataset):
                         'doc_ids': sampled_retrievals['pid'].tolist(),
                         'doc_texts': sampled_retrievals['text'].tolist()
                  }
+                if self.unrelated_retrievals is not None:
+                    self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
+                    if len(self.unrelated_retrievals)>2000:
+                        self.unrelated_retrievals.sample(2000)
+                else:
+                    self.unrelated_retrievals = merged_retrievals.sample(n=2)
 
-    def __len__(self):
-        return len(self.source)//self.n_workers
+    #def __len__(self):
+    #    return (len(self.source)//self.n_workers)-self.skipped_instances
 
 
 # TODO: override collate function to simply collate tuples into a list
@@ -697,7 +706,7 @@ class NLLLossSystem(pl.LightningModule):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output = self.loss_fn(batch['source'], batch['target'])
 
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.sum())
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'valid', self.current_epoch, batch_idx, 'loss', output.sum())
 
         return output.sum()
 
@@ -881,6 +890,7 @@ if __name__ == '__main__':
                                      help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--resume_from_checkpoint', type=str, help="Optional, if given, loads the scorers and generator from the checkpoint. Resumes training using the resumed pytorch lightning trainer.resumed ")
+    training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
 
 
     Experiment.add_argument_group(parser)
@@ -940,12 +950,12 @@ if __name__ == '__main__':
         print("Overriding the model using the checkpoint")
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint)
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches)
         trainer.max_epochs = trainer.current_epoch+args.max_epochs
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback])
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches)
     trainer.fit(model, train_dataloader, val_dataloader)
 
 
