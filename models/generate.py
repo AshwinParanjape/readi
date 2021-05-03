@@ -92,7 +92,7 @@ class TargetGenerator(pl.LightningModule):
 
                     instance['retrievals'].append(doc_gens)
                     overall_doc_idx+=1
-            self.instances.append(instance)
+                self.instances.append(instance)
         return generated_output
 
 
