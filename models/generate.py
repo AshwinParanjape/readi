@@ -143,11 +143,11 @@ def generate():
     decoding_group.add_argument('--batch_size', type=int, default=4,
                                 help="Number of source strings used at a time")
 
-    #Experiment.add_argument_group(parser)
+    Experiment.add_argument_group(parser)
     args = parser.parse_args()
-    #experiment = Experiment.from_parser(parser)
-    curexpdir = './'
-    #curexpdir = experiment.curexpdir
+    experiment = Experiment.from_parser(parser)
+    #curexpdir = './'
+    curexpdir = experiment.curexpdir
     #state_dict = torch.load(args.checkpoint, map_location=torch.device('cpu'))['state_dict']
     #_generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base",
     #                                                               force_bos_token_to_be_generated=True)
@@ -157,7 +157,7 @@ def generate():
     #p_scorer = ColBERTScorer.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('p_scorer')})
     #model = TargetGenerator(generator, p_scorer, expdir=curexpdir, strict=False)
     baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
-    model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False,
+    model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False, expdir=curexpdir,
                                                  query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                                                  truncate_query_from_start=args.truncate_query_from_start,
                                                  n_samples_per_doc = args.n_samples_per_doc,
