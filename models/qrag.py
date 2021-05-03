@@ -543,7 +543,7 @@ class Generator(torch.nn.Module):
         input_encoding = self.prepare_generator_inputs(sources, batched_docs)
         generator_output = self.generator.generate(input_ids=input_encoding['input_ids'],
                                         attention_mask=input_encoding['attention_mask'],
-                                         return_dict_in_generate=True, do_sample=True, num_beams=1,
+                                         return_dict_in_generate=True,
                                         **generation_kwargs)
         # Use the following to generate based on pure sampling and verify that the same probabilities are computed by
         # the rescorer as well
@@ -556,7 +556,7 @@ class Generator(torch.nn.Module):
         #                                                    top_k=0,
         #                                                    **generation_kwargs)
         generator_output.log_liklihood = self.rescore_from_tensors(input_encoding, generator_output, generation_kwargs.get('num_return_sequences', 1))
-        decoded_output = self.tokenizer.batch_decode(generator_output.sequences)
+        decoded_output = self.tokenizer.batch_decode(generator_output.sequences, skip_special_tokens=True)
         generator_output.strings = decoded_output
         generator_output.input_encoding = input_encoding
         return generator_output
@@ -567,8 +567,8 @@ class Generator(torch.nn.Module):
         This is useful because the scores returned by generate are affected by warping and beam search, also useful
         for rescoring with another model that wasn't use to generate the sequences
         """
-        rescorer_output = self.generator(qinput_ids=input_encoding['input_ids'].repeat_interleave(repeats=n_samples_per_doc, dim=0),
-                                         attention_mask=input_encoding['attention_mask'].repeat_interleave(repeats=8, dim=0),
+        rescorer_output = self.generator(input_ids=input_encoding['input_ids'].repeat_interleave(repeats=n_samples_per_doc, dim=0),
+                                         attention_mask=input_encoding['attention_mask'].repeat_interleave(repeats=n_samples_per_doc, dim=0),
                                          decoder_input_ids=generator_output.sequences[:, :-1])
         rescorer_log_softmax=torch.log_softmax(rescorer_output.logits, dim=2)
         not_pad = generator_output.sequences[:, 1:-1]!=self.generator.config.pad_token_id
@@ -643,7 +643,7 @@ class MarginalizedNLLFn(torch.nn.Module):
         scores = self.scorer(sources, batched_docs)
         doc_log_probs = torch.nn.functional.log_softmax(scores, dim=1) #Shape: n_instances x n_docs
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
-        loss = -torch.logsumexp(doc_log_probs + generator_log_prob, dim=(0, 1))
+        loss = -torch.logsumexp(doc_log_probs + generator_log_prob, dim=1).sum(dim=0)
         return MarginalizedNLL(loss, lm_nll = -generator_log_prob, p_scores=scores)
 
 @dataclass
@@ -673,7 +673,7 @@ class ELBOFn(torch.nn.Module):
         q_probs = stable_softmax(q_scores, dim=1)
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
 
-        marginalized_nll_loss = -torch.logsumexp(p_log_probs + generator_log_prob, dim=(0, 1))
+        marginalized_nll_loss = -torch.logsumexp(p_log_probs + generator_log_prob, dim=1).sum(dim=0)
 
         reconstruction_score = (q_probs * generator_log_prob).sum()
         kl_regularization = (q_probs * (q_probs.log() - p_probs.log())).sum()
