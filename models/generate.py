@@ -142,6 +142,7 @@ def generate():
                                      help="Temperature used for sampling docs")
     decoding_group.add_argument('--batch_size', type=int, default=4,
                                 help="Number of source strings used at a time")
+    decoding_group.add_argument('--limit_batches', type=int, default=1.0, help="Limit number of batches")
 
     Experiment.add_argument_group(parser)
     args = parser.parse_args()
@@ -175,7 +176,7 @@ def generate():
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     trainer = Trainer(gpus=1, default_root_dir=curexpdir)
-    trainer.test(model, test_dataloaders=val_dataloader)
+    trainer.test(model, test_dataloaders=val_dataloader, limit_test_batches=args.limit_batches)
     with open(Path(curexpdir)/'generations.pkl', 'wb') as f:
         pkl.dump(model.instances, f)
 
