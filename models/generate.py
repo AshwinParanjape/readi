@@ -147,7 +147,7 @@ def generate():
     args = parser.parse_args()
     experiment = Experiment.from_parser(parser)
     #curexpdir = './'
-    curexpdir = experiment.curexpdir
+    curexpdir = experiment.curexpdir or './'
     #state_dict = torch.load(args.checkpoint, map_location=torch.device('cpu'))['state_dict']
     #_generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base",
     #                                                               force_bos_token_to_be_generated=True)

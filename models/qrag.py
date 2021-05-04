@@ -438,7 +438,7 @@ def recompute_retriever_scores(scorer: ColBERTScorer, query: str, retrievals_df:
     batched_docs = [retrievals_df['text'].tolist()]
     scores = scorer(queries, batched_docs)
     rescored_retrievals_df = retrievals_df.copy()
-    rescored_retrievals_df['score'] = scores[0, :]
+    rescored_retrievals_df['score'] = scores[0, :].cpu()
     return rescored_retrievals_df
 
 class PDataset(torch.utils.data.IterableDataset):
