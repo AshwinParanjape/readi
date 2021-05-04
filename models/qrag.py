@@ -220,6 +220,28 @@ class ClosedSetRetrievals():
                 yield last_qid, last_qid_retrievals
 
 
+class ColBERTScorer(ColBERT):
+    def __init__(self, *args, truncate_query_from_start=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.query_tokenizer = QueryTokenizer(self.query_maxlen, truncate_from_start=truncate_query_from_start)
+        self.doc_tokenizer = DocTokenizer(self.doc_maxlen)
+
+    def tensorize(self, queries, batched_docs):
+        docs = self.doc_tokenizer.tensorize([str(doc) for docs in batched_docs for doc in docs])
+        queries = self.query_tokenizer.tensorize(queries)
+        return queries, docs
+
+    def forward(self, queries, batched_docs):
+        n_instances = len(batched_docs)
+        n_docs = len(batched_docs[0])
+        Q, D = self.tensorize(queries, batched_docs)
+        Q = [t.pin_memory().to(device=self.device, non_blocking=True) for t in Q]
+        D = [t.pin_memory().to(device=self.device, non_blocking=True) for t in D]
+        query_embeds = self.query(*Q)
+        doc_embeds = self.doc(*D)
+        doc_embeds = doc_embeds.view(n_instances, n_docs, *doc_embeds.shape[1:])
+        score = self.score(query_embeds, doc_embeds)
+        return score
 class DocumentSampler:
     def __call__(self, retrievals):
         raise NotImplementedError("Sampler needs to implement __call__method")
@@ -239,6 +261,23 @@ class RandomDocumentSampler(DocumentSampler):
             n= self.n
 
         return retrievals.sample(n=n)
+
+class TopKDocumentSampler(DocumentSampler):
+    def __init__(self, k):
+        self.k = k
+
+    def __call__(self, retrievals: pd.DataFrame):
+        # retrievals has columns ['qid', 'pid', 'rank', 'score', 'doc_text', 'title', 'text']
+        if len(retrievals) == 0:
+            return retrievals
+        if self.k > len(retrievals):
+            print("Fewer retrievals than k", sys.stderr)
+            k = len(retrievals)
+        else:
+            k= self.k
+
+        top_k_retrievals = retrievals.sort_values('score', ascending=False)[:k]
+        return top_k_retrievals
 
 class SimpleDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
@@ -394,9 +433,16 @@ class Seq2SeqDataset(torch.utils.data.IterableDataset):
     def __len__(self):
         return len(self.source)//self.n_workers
 
+def recompute_retriever_scores(scorer: ColBERTScorer, query: str, retrievals_df: pd.DataFrame):
+    queries = [query]
+    batched_docs = [retrievals_df['text'].tolist()]
+    scores = scorer(queries, batched_docs)
+    rescored_retrievals_df = retrievals_df.copy()
+    rescored_retrievals_df['score'] = scores[0, :]
+    return rescored_retrievals_df
 
 class PDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1):
+    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1, p_scorer: ColBERTScorer = None):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         if target_path:
             self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
@@ -405,6 +451,7 @@ class PDataset(torch.utils.data.IterableDataset):
             self.target['target'] = self.source['source'] # To quickly get the same shape
             self.target['target'] = ''
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
+        self.p_scorer = p_scorer
         self.cached_scores: Dict[int, Dict[int, float]] = defaultdict(dict)
         self.sampler = sampler
         self.worker_id = worker_id
@@ -414,6 +461,8 @@ class PDataset(torch.utils.data.IterableDataset):
         for qid, (source, target, (p_qid, p_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals)):
             #assert (qid == p_qid) , (qid, p_qid)
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
+                if self.p_scorer:
+                    p_retrievals = recompute_retriever_scores(self.p_scorer, source, p_retrievals)
                 sampled_retrievals = self.sampler(p_retrievals)
                 yield {'qid': qid,
                         'source': source,
@@ -582,28 +631,6 @@ class Generator(torch.nn.Module):
         #generator_seq_ll = generator_ll.sum(dim=1)
         return rescorer_seq_ll
 
-class ColBERTScorer(ColBERT):
-    def __init__(self, *args, truncate_query_from_start=False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.query_tokenizer = QueryTokenizer(self.query_maxlen, truncate_from_start=truncate_query_from_start)
-        self.doc_tokenizer = DocTokenizer(self.doc_maxlen)
-
-    def tensorize(self, queries, batched_docs):
-        docs = self.doc_tokenizer.tensorize([str(doc) for docs in batched_docs for doc in docs])
-        queries = self.query_tokenizer.tensorize(queries)
-        return queries, docs
-
-    def forward(self, queries, batched_docs):
-        n_instances = len(batched_docs)
-        n_docs = len(batched_docs[0])
-        Q, D = self.tensorize(queries, batched_docs)
-        Q = [t.pin_memory().to(device=self.device, non_blocking=True) for t in Q]
-        D = [t.pin_memory().to(device=self.device, non_blocking=True) for t in D]
-        query_embeds = self.query(*Q)
-        doc_embeds = self.doc(*D)
-        doc_embeds = doc_embeds.view(n_instances, n_docs, *doc_embeds.shape[1:])
-        score = self.score(query_embeds, doc_embeds)
-        return score
 
 class LM_NLL(torch.nn.Module):
     def __init__(self, generator: Generator):
@@ -903,17 +930,57 @@ if __name__ == '__main__':
 
     # TODO: Currently only using local rank and args.ngpus
     # The code won't work with multiple nodes, for which one needs to have a global rank and world size
+    logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
+    checkpoint_callback = ModelCheckpoint(monitor=None, save_top_k=-1)
+    if args.resume_from_checkpoint:
+        print("Overriding the model using the checkpoint")
+        trainer = Trainer(gpus=args.gpus, logger=logger,
+                          default_root_dir=curexpdir, track_grad_norm=2,
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches)
+        trainer.max_epochs = trainer.current_epoch+args.max_epochs
+        if args.loss_type == 'NLL':
+            model = NLLLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
+                                                       lr=args.lr, expdir=curexpdir,
+                                                       truncate_query_from_start=args.truncate_query_from_start)
+        elif args.loss_type == 'Marginalized':
+            model = MarginalizedLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
+                                                                p_scorer_checkpoint= args.p_scorer_checkpoint,
+                                                                query_maxlen=args.query_maxlen,
+                                                                doc_maxlen=args.doc_maxlen,
+                                                                expdir=curexpdir, lr=args.lr,
+                                                                truncate_query_from_start=args.truncate_query_from_start)
+        elif args.loss_type == 'ELBO':
+            model = ELBOLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
+                                                        p_scorer_checkpoint=args.p_scorer_checkpoint,
+                                                        q_scorer_checkpoint=args.p_scorer_checkpoint,
+                                                        query_maxlen=args.query_maxlen,
+                                                        doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
+                                                        truncate_query_from_start=args.truncate_query_from_start)
 
+
+    else:
+        trainer = Trainer(gpus=args.gpus, logger=logger,
+                          default_root_dir=curexpdir, track_grad_norm=2,
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches)
+        if args.loss_type == 'NLL':
+            model = NLLLossSystem(lr=args.lr, expdir=curexpdir,
+                                  truncate_query_from_start=args.truncate_query_from_start)
+        elif args.loss_type == 'Marginalized':
+            model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen,
+                                           expdir=curexpdir, lr=args.lr,
+                                           truncate_query_from_start=args.truncate_query_from_start)
+        elif args.loss_type == 'ELBO':
+            model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
+        else:
+            assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
     if args.loss_type == 'NLL':
-        model = NLLLossSystem(lr = args.lr, expdir=curexpdir, truncate_query_from_start=args.truncate_query_from_start)
         train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
         assert args.doc_sampler == 'SimpleDocumentSampler'
-        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
         doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
@@ -922,7 +989,6 @@ if __name__ == '__main__':
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'ELBO':
         assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler' or args.doc_sampler == 'RankPNDocumentSampler'
-        model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
@@ -938,24 +1004,10 @@ if __name__ == '__main__':
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         #val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, args.val_q_ranked_passages, doc_sampler)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-    else:
-        assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
-    logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
-    checkpoint_callback = ModelCheckpoint(monitor=None, save_top_k=-1)
     #trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
     #                  accumulate_grad_batches=args.accumulate_grad_batches, fast_dev_run=True)#, callbacks=[checkpoint_callback])
     #trainer.fit(model, train_dataloader, val_dataloader)
-    if args.resume_from_checkpoint:
-        print("Overriding the model using the checkpoint")
-        trainer = Trainer(gpus=args.gpus, logger=logger,
-                          default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches)
-        trainer.max_epochs = trainer.current_epoch+args.max_epochs
-    else:
-        trainer = Trainer(gpus=args.gpus, logger=logger,
-                          default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches)
     trainer.fit(model, train_dataloader, val_dataloader)
 
 

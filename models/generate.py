@@ -12,8 +12,7 @@ from meticulous import Experiment
 from transformers import BartForConditionalGeneration, BartTokenizer
 
 from models.qrag import SimpleDocumentSampler, PDataset, collate_fn, MarginalizedLossSystem, Generator, ColBERTScorer, \
-    NLLLossSystem
-
+    NLLLossSystem, TopKDocumentSampler
 
 
 class TargetGenerator(pl.LightningModule):
@@ -115,7 +114,7 @@ def generate():
                              help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
     paths_group.add_argument('--checkpoint', type=str, default=(qtraining_exp_base_path / '16/checkpoints/epoch=2-step=11822.ckpt').as_posix() ,
                              help='Path to checkpoint which contains the generator and p_scorer model')
-    paths_group.add_argument('--no_retrieval_checkpoint', type=str, default=(qtraining_exp_base_path / '17/checkpoints/epoch=2-step=11822.ckpt').as_posix() ,
+    paths_group.add_argument('--no_retrieval_checkpoint', type=str, default=(qtraining_exp_base_path / '17/checkpoints/epoch=1-step=15763.ckpt').as_posix() ,
                              help='Path to checkpoint which contains the generator and p_scorer model')
 
 
@@ -170,8 +169,10 @@ def generate():
                                                  min_length = args.min_length,
                                                  max_length = args.max_length,
                                                  )
-    doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-    val_dataset = PDataset(args.source_path, args.target_path, args.p_ranked_passages, doc_sampler, worker_id=0, n_workers=1)
+    #doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+    doc_sampler = TopKDocumentSampler(k=args.n_sampled_docs)
+    val_dataset = PDataset(args.source_path, args.target_path, args.p_ranked_passages, doc_sampler, worker_id=0, n_workers=1,
+                           p_scorer=model.p_scorer)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     trainer = Trainer(gpus=1, default_root_dir=curexpdir, limit_test_batches=5)
