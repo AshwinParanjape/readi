@@ -442,7 +442,7 @@ def recompute_retriever_scores(scorer: ColBERTScorer, query: str, retrievals_df:
     return rescored_retrievals_df
 
 class PDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1, p_scorer: ColBERTScorer = None):
+    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1, p_scorer: ColBERTScorer = None, yield_scores=False):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         if target_path:
             self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
@@ -456,6 +456,7 @@ class PDataset(torch.utils.data.IterableDataset):
         self.sampler = sampler
         self.worker_id = worker_id
         self.n_workers = n_workers
+        self.yield_scores = yield_scores
 
     def __iter__(self):
         for qid, (source, target, (p_qid, p_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals)):
@@ -464,12 +465,15 @@ class PDataset(torch.utils.data.IterableDataset):
                 if self.p_scorer:
                     p_retrievals = recompute_retriever_scores(self.p_scorer, source, p_retrievals)
                 sampled_retrievals = self.sampler(p_retrievals)
-                yield {'qid': qid,
+                yield_dict= {'qid': qid,
                         'source': source,
                         'target': target,
                         'doc_ids': sampled_retrievals['pid'].tolist(),
                         'doc_texts': sampled_retrievals['text'].tolist(),
                         }
+                if self.yield_scores:
+                    yield_dict['doc_scores'] = sampled_retrievals['score'].tolist()
+                yield yield_dict
     def __len__(self):
         return len(self.source)//self.n_workers
 
@@ -529,6 +533,8 @@ def collate_fn(batch: Dict):
     )
     collated['doc_ids'] = [d['doc_ids'] for d in batch ]
     collated['doc_texts'] = [d['doc_texts'] for d in batch ]
+    if 'doc_scores' in batch[0]:
+        collated['doc_scores'] = [d['doc_scores'] for d in batch ]
     return collated
 
 @dataclass

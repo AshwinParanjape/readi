@@ -14,6 +14,34 @@ from transformers import BartForConditionalGeneration, BartTokenizer
 from models.qrag import SimpleDocumentSampler, PDataset, collate_fn, MarginalizedLossSystem, Generator, ColBERTScorer, \
     NLLLossSystem, TopKDocumentSampler
 
+class RetrievalScorer(pl.LightningModule):
+    def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False):
+        super().__init__()
+        self.expdir = expdir
+        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                                      truncate_query_from_start = truncate_query_from_start,
+                                                      query_maxlen=query_maxlen,
+                                                      doc_maxlen=doc_maxlen,
+                                                      )
+        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                                      truncate_query_from_start = truncate_query_from_start,
+                                                      query_maxlen=query_maxlen,
+                                                      doc_maxlen=doc_maxlen,
+                                                      )
+        self.instances = []
+
+    def test_step(self, batch, batch_idx):
+        print(batch, batch_idx)
+        overall_doc_idx = 0
+        sources, targets, batched_docs, batched_doc_scores = batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores']
+        for qid, doc_ids, doc_scores, source, target, docs in zip(batch['qid'], batch['doc_ids'], batched_doc_scores, sources, targets, batched_docs):
+            instance = {'qid': qid.item(), 'source': source, 'target': target, 'retrievals': []}
+            for doc_id, doc, doc_score in zip(doc_ids, docs, doc_scores):
+                doc_gens = {'doc_id': doc_id, 'doc_text': doc, 'doc_score': doc_score, }
+                instance['retrievals'].append(doc_gens)
+                overall_doc_idx+=1
+            self.instances.append(instance)
+        return None
 
 class TargetGenerator(pl.LightningModule):
     def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
@@ -33,6 +61,11 @@ class TargetGenerator(pl.LightningModule):
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen,
                                           )
+        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                                      truncate_query_from_start = truncate_query_from_start,
+                                                      query_maxlen=query_maxlen,
+                                                      doc_maxlen=doc_maxlen,
+                                                      )
         self.baseline_generator = baseline_generator
         self.instances = []
         #with open(Path(self.expdir)/ Path('generations.tsv'), 'w') as f:
@@ -142,6 +175,7 @@ def generate():
     decoding_group.add_argument('--batch_size', type=int, default=4,
                                 help="Number of source strings used at a time")
     decoding_group.add_argument('--limit_batches', type=int, default=1.0, help="Limit number of batches")
+    decoding_group.add_argument('--scorer', type=str, default='p_scorer', help='Use a specific scorer (p_scorer, q_scorer)')
 
     Experiment.add_argument_group(parser)
     args = parser.parse_args()
@@ -157,7 +191,11 @@ def generate():
     #p_scorer = ColBERTScorer.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('p_scorer')})
     #model = TargetGenerator(generator, p_scorer, expdir=curexpdir, strict=False)
     baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
-    model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False, expdir=curexpdir,
+    if args.n_samples_per_doc == 0:
+        model = RetrievalScorer.load_from_checkpoint(args.checkpoint, strict=False,
+                                                     expdir = curexpdir)
+    else:
+        model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False, expdir=curexpdir,
                                                  query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                                                  truncate_query_from_start=args.truncate_query_from_start,
                                                  n_samples_per_doc = args.n_samples_per_doc,
@@ -172,8 +210,12 @@ def generate():
                                                  )
     #doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
     doc_sampler = TopKDocumentSampler(k=args.n_sampled_docs)
+    if args.scorer=='p_scorer':
+        val_dataset_scorer = model.p_scorer
+    elif args.scorer=='q_scorer':
+        val_dataset_scorer = model.q_scorer
     val_dataset = PDataset(args.source_path, args.target_path, args.p_ranked_passages, doc_sampler, worker_id=0, n_workers=1,
-                           p_scorer=model.p_scorer)
+                           p_scorer=val_dataset_scorer, yield_scores=True)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     trainer = Trainer(gpus=1, default_root_dir=curexpdir, limit_test_batches=args.limit_batches)
