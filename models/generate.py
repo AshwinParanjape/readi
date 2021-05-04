@@ -91,7 +91,7 @@ class TargetGenerator(pl.LightningModule):
 
                     instance['retrievals'].append(doc_gens)
                     overall_doc_idx+=1
-            self.instances.append(instance)
+                self.instances.append(instance)
         return generated_output
 
 
@@ -141,12 +141,13 @@ def generate():
                                      help="Temperature used for sampling docs")
     decoding_group.add_argument('--batch_size', type=int, default=4,
                                 help="Number of source strings used at a time")
+    decoding_group.add_argument('--limit_batches', type=int, default=1.0, help="Limit number of batches")
 
-    #Experiment.add_argument_group(parser)
+    Experiment.add_argument_group(parser)
     args = parser.parse_args()
-    #experiment = Experiment.from_parser(parser)
-    curexpdir = './'
-    #curexpdir = experiment.curexpdir
+    experiment = Experiment.from_parser(parser)
+    #curexpdir = './'
+    curexpdir = experiment.curexpdir
     #state_dict = torch.load(args.checkpoint, map_location=torch.device('cpu'))['state_dict']
     #_generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base",
     #                                                               force_bos_token_to_be_generated=True)
@@ -156,7 +157,7 @@ def generate():
     #p_scorer = ColBERTScorer.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('p_scorer')})
     #model = TargetGenerator(generator, p_scorer, expdir=curexpdir, strict=False)
     baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
-    model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False,
+    model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False, expdir=curexpdir,
                                                  query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                                                  truncate_query_from_start=args.truncate_query_from_start,
                                                  n_samples_per_doc = args.n_samples_per_doc,
@@ -175,7 +176,7 @@ def generate():
                            p_scorer=model.p_scorer)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
-    trainer = Trainer(gpus=1, default_root_dir=curexpdir, limit_test_batches=5)
+    trainer = Trainer(gpus=1, default_root_dir=curexpdir, limit_test_batches=args.limit_batches)
     trainer.test(model, test_dataloaders=val_dataloader)
     with open(Path(curexpdir)/'generations.pkl', 'wb') as f:
         pkl.dump(model.instances, f)
