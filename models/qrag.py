@@ -334,15 +334,17 @@ class GuidedNoIntersectionDocumentSampler(DocumentSampler):
         return mixed_samples
 
 class RankPNDocumentSampler(DocumentSampler):
-    def __init__(self, n, kP=20, kQ1=20, kQ2=50, positives_cutoff=3):
+    def __init__(self, n, kP=20, kQR=5, kQ1=20, kQ2=50, positives_cutoff=3):
         assert kQ1 <= kQ2, "Positives should be a subset of protected"
         self.n = n
         self.kP = kP
+        self.kQR = kQR
         self.kQ1 = kQ1
         self.kQ2 = kQ2
         self.positives_cutoff = max(positives_cutoff, self.n//4+1) #at least one more than the number of positive samples desired
         self.positives_sampler = RandomDocumentSampler(self.n//4)
-        self.negatives_sampler = RandomDocumentSampler(self.n//2-1)
+        self.negatives_sampler = RandomDocumentSampler(self.n//2-3)
+        self.relevant_positive_sampler = RandomDocumentSampler(1)
         self.random_sampler = RandomDocumentSampler(1)
 
     def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
@@ -354,21 +356,29 @@ class RankPNDocumentSampler(DocumentSampler):
         positives = positives.sort_values('rank_p')[:self.positives_cutoff]
         positive_samples = self.positives_sampler(positives)
 
+        relevant_positives = retrievals[(retrievals['rank_q'] <= self.kQR) & ~(retrievals['pid'].isin(positive_samples['pid']))]
+        relevant_positive_samples = self.relevant_positive_sampler(relevant_positives)
+
         negatives = retrievals[~(protected_indices) & retrievals['rank_p'].notna()]
         negative_samples = self.negatives_sampler(negatives)
 
+        empty_sample = pd.DataFrame([{
+            'qid': retrievals['qid'][0], 'pid': -1, 'score_p': -1, 'score_q': -1,
+            'doc_text': '',  'title': '', 'text': ''
+        }])
+
         if unrelated_retrievals is not None:
             unrelated_samples = self.random_sampler(unrelated_retrievals)
-            mixed_samples = pd.concat([positive_samples, negative_samples, unrelated_samples])
+            mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, empty_sample, unrelated_samples])
         else:
-            mixed_samples = pd.concat([positive_samples, negative_samples])
+            mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, empty_sample])
         diff = self.n - len(mixed_samples)
         if diff > 0:
             extra_samples = RandomDocumentSampler(diff)(negatives)
             if unrelated_retrievals is not None:
-                mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples, unrelated_samples])
+                mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, extra_samples, empty_sample, unrelated_samples])
             else:
-                mixed_samples = pd.concat([positive_samples, negative_samples, extra_samples])
+                mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, extra_samples, empty_sample])
 
         return mixed_samples
 
