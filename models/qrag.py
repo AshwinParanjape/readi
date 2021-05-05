@@ -343,8 +343,8 @@ class RankPNDocumentSampler(DocumentSampler):
         self.kQ2 = kQ2
         self.positives_cutoff = max(positives_cutoff, self.n//4+1) #at least one more than the number of positive samples desired
         self.positives_sampler = RandomDocumentSampler(self.n//4)
-        self.negatives_sampler = RandomDocumentSampler(self.n//2)
-        self.relevant_positive_sampler = RandomDocumentSampler(1)
+        self.negatives_sampler = RandomDocumentSampler(self.n//2-1)
+        self.relevant_positive_sampler = RandomDocumentSampler(self.n//4)
         self.random_sampler = RandomDocumentSampler(1)
 
     def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
