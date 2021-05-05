@@ -343,7 +343,7 @@ class RankPNDocumentSampler(DocumentSampler):
         self.kQ2 = kQ2
         self.positives_cutoff = max(positives_cutoff, self.n//4+1) #at least one more than the number of positive samples desired
         self.positives_sampler = RandomDocumentSampler(self.n//4)
-        self.negatives_sampler = RandomDocumentSampler(self.n//2-3)
+        self.negatives_sampler = RandomDocumentSampler(self.n//2)
         self.relevant_positive_sampler = RandomDocumentSampler(1)
         self.random_sampler = RandomDocumentSampler(1)
 
@@ -362,23 +362,23 @@ class RankPNDocumentSampler(DocumentSampler):
         negatives = retrievals[~(protected_indices) & retrievals['rank_p'].notna()]
         negative_samples = self.negatives_sampler(negatives)
 
-        empty_sample = pd.DataFrame([{
-            'qid': retrievals['qid'][0], 'pid': -1, 'score_p': -1, 'score_q': -1,
-            'doc_text': '',  'title': '', 'text': ''
-        }])
+        #empty_sample = pd.DataFrame([{
+            #'qid': retrievals['qid'][0], 'pid': -1, 'score_p': -1, 'score_q': -1,
+            #'doc_text': '',  'title': '', 'text': ''
+        #}])
 
         if unrelated_retrievals is not None:
             unrelated_samples = self.random_sampler(unrelated_retrievals)
-            mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, empty_sample, unrelated_samples])
+            mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, unrelated_samples])
         else:
-            mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, empty_sample])
+            mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples])
         diff = self.n - len(mixed_samples)
         if diff > 0:
             extra_samples = RandomDocumentSampler(diff)(negatives)
             if unrelated_retrievals is not None:
-                mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, extra_samples, empty_sample, unrelated_samples])
+                mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, extra_samples, unrelated_samples])
             else:
-                mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, extra_samples, empty_sample])
+                mixed_samples = pd.concat([relevant_positive_samples, positive_samples, negative_samples, extra_samples])
 
         return mixed_samples
 
