@@ -134,7 +134,24 @@ class ColBERT(BertPreTrainedModel):
         self.init_weights()
 
     def forward(self, Q, D):
+        #q_input_ids, q_attention_masks = *Q
+        #d_input_ids, d_attention_masks = *D
+        #Q, D = combined_query_doc(q_input_ids, q_attention_masks, d_input_ids, d_attention_masks)
+        #return self.score(Q, D)
         return self.score(self.query(*Q), self.doc(*D))
+
+    def combined_query_doc(self, q_input_ids, q_attention_masks, d_input_ids, d_attention_masks):
+        input_ids = torch.cat([q_input_ids, d_input_ids], dim=0)
+        attention_masks = torch.cat([q_attention_masks, d_attention_masks])
+        bert_embeddings = self.bert(input_ids, attention_mask=attention_masks)[0]
+        embeddings = self.linear(bert_embeddings)
+        Q = embeddings[:q_input_ids.shape[0], ...]
+        D = embeddings[q_input_ids.shape[0]:, ...]
+        mask = torch.tensor(self.mask(input_ids)).pin_memory().to(D, non_blocking=True).unsqueeze(2)
+        D = D * mask
+        Q = torch.nn.functional.normalize(Q, p=2, dim=2)
+        D = torch.nn.functional.normalize(D, p=2, dim=2)
+        return Q, D
 
     def query(self, input_ids, attention_mask):
         #input_ids, attention_mask = input_ids.to(DEVICE), attention_mask.to(DEVICE)
@@ -237,6 +254,7 @@ class ColBERTScorer(ColBERT):
         Q, D = self.tensorize(queries, batched_docs)
         Q = [t.pin_memory().to(device=self.device, non_blocking=True) for t in Q]
         D = [t.pin_memory().to(device=self.device, non_blocking=True) for t in D]
+        #query_embeds, doc_embeds = self.combined_query_doc(*Q, *D)
         query_embeds = self.query(*Q)
         doc_embeds = self.doc(*D)
         doc_embeds = doc_embeds.view(n_instances, n_docs, *doc_embeds.shape[1:])
@@ -671,6 +689,12 @@ class MarginalizedNLL():
     loss: Union[float, torch.Tensor]
     lm_nll: torch.Tensor
     p_scores: torch.Tensor
+    def metrics(self):
+        return [('loss', self.loss)]
+
+    @property
+    def intermediate_values(self):
+        return [('lm_nll', self.lm_nll), ('p_scores', self.p_scores)]
 
 class MarginalizedNLLFn(torch.nn.Module):
     def __init__(self, scorer:ColBERTScorer, generator: Generator):
@@ -699,6 +723,83 @@ class ELBO():
     p_scores: torch.Tensor
     q_scores: torch.Tensor
 
+    @property
+    def metrics(self):
+        return [('loss', self.loss),
+                ('marginalized_loss', self.marginalized_loss),
+                ('reconstruction_score', self.reconstruction_score),
+                ('kl_divergence', self.kl_divergence)]
+
+    @property
+    def intermediate_values(self):
+        return [('p_scores.tsv', self.p_scores),
+                ('q_scores.tsv', self.q_scores),
+                ('nll.tsv', self.lm_nll)]
+@dataclass
+class ReconstructionLoss():
+    loss: Union[float, torch.Tensor]
+    lm_nll: torch.Tensor
+    q_scores: torch.Tensor
+    @property
+    def metrics(self):
+        return [('loss', self.loss)]
+
+    @property
+    def intermediate_values(self):
+        return [('nll', self.lm_nll), ('q_scores', self.q_scores)]
+
+
+class ReconstructionLossFn(torch.nn.Module):
+    def __init__(self, q_scorer:ColBERTScorer, generator: Generator):
+        super().__init__()
+        self.q_scorer = q_scorer
+        self.q_scorer.eval()
+        self.generator = generator
+        self.generator_nll = LM_NLL(self.generator)
+
+    def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
+        st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
+        q_scores = self.q_scorer(st_text, batched_docs)
+        q_probs = stable_softmax(q_scores, dim=1)
+        generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
+
+        reconstruction_loss = -(q_probs * generator_log_prob).sum()
+        return ReconstructionLoss(reconstruction_loss, -generator_log_prob, q_scores)
+
+@dataclass
+class KLDivergence():
+    loss: Union[float, torch.Tensor]
+    p_scores: torch.Tensor
+    q_scores: torch.Tensor
+
+    @property
+    def metrics(self):
+        return [('loss', self.loss)]
+
+    @property
+    def intermediate_values(self):
+        return [('p_scores', self.p_scores), ('q_scores', self.q_scores)]
+
+class KLDivergenceFn(torch.nn.Module):
+    def __init__(self, p_scorer: ColBERTScorer, q_scorer:ColBERTScorer):
+        super().__init__()
+        self.q_scorer = q_scorer
+        self.q_scorer.eval()
+        self.p_scorer = p_scorer
+        self.p_scorer.eval()
+
+    def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
+        st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
+        p_scores = self.p_scorer(sources, batched_docs)
+        p_probs = stable_softmax(p_scores, dim=1)
+        q_scores = self.q_scorer(st_text, batched_docs)
+        q_probs = stable_softmax(q_scores, dim=1)
+        kl_regularization = (q_probs * (q_probs.log() - p_probs.log())).sum()
+
+        return KLDivergence(kl_regularization, p_scores, q_scores)
+
+
+
 class ELBOFn(torch.nn.Module):
     def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator):
         super().__init__()
@@ -723,6 +824,24 @@ class ELBOFn(torch.nn.Module):
         elbo_loss = -(reconstruction_score - kl_regularization)
 
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
+
+
+def log_value(filename, stage, epoch, batch_idx, key, value):
+    with open(filename, 'a') as f:
+        f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}\n')
+
+def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_values):
+    with open(filename, 'a') as f:
+        for qid, doc_ids, values in zip(qids, batched_doc_ids, batched_values):
+            for doc_id, value in zip(doc_ids, values):
+                f.write(f'{stage}\t{epoch}\t{qid}\t{doc_id}\t{value}\n')
+
+def log_all(expdir, loop, current_epoch, batch_idx, batch, output):
+    for name, value in output.metrics:
+        log_value(Path(expdir) / Path('metrics.tsv'), loop, current_epoch, batch_idx, name, value)
+
+    for fname, values in output.intermediate_values:
+        log_batch_value(Path(expdir) / fname, loop, current_epoch, batch['qid'], batch['doc_ids'], values)
 
 class NLLLossSystem(pl.LightningModule):
     def __init__(self, expdir='', lr=1e-3, truncate_query_from_start=False) :
@@ -833,55 +952,140 @@ class ELBOLossSystem(pl.LightningModule):
         self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator)
         self.lr = lr
         self.expdir = expdir
-        with open(Path(self.expdir)/ Path('p_scores.tsv'), 'w') as f:
-            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
-        with open(Path(self.expdir)/ Path('q_scores.tsv'), 'w') as f:
-            f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
-        with open(Path(self.expdir)/Path('nll.tsv'), 'w') as f:
-            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
-        with open(Path(self.expdir)/Path('metrics.tsv'), 'w') as f:
-            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+        self.setup_tsv_files()
 
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output: ELBO = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'marginalized_loss',  output.marginalized_loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'reconstruction_score', output.reconstruction_score)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'kl_divergence',  output.kl_divergence)
-
-        log_batch_value(Path(self.expdir)/ Path('p_scores.tsv'), 'train', self.current_epoch, batch['qid'], batch['doc_ids'], output.p_scores)
-        log_batch_value(Path(self.expdir)/ Path('q_scores.tsv'), 'train', self.current_epoch, batch['qid'], batch['doc_ids'], output.q_scores)
-        log_batch_value(Path(self.expdir)/ Path('nll.tsv'), 'train', self.current_epoch, batch['qid'], batch['doc_ids'], output.lm_nll)
+        log_all(self.expdir, 'train', self.current_epoch, batch_idx, batch, output)
         return output.loss
 
     def validation_step(self, batch, batch_idx):
         output: ELBO = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'loss', output.loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'marginalized_loss',  output.marginalized_loss)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'reconstruction_score', output.reconstruction_score)
-        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'kl_divergence',  output.kl_divergence)
-
-        log_batch_value(Path(self.expdir)/ Path('p_scores.tsv'), 'val', self.current_epoch, batch['qid'], batch['doc_ids'], output.p_scores)
-        log_batch_value(Path(self.expdir)/ Path('q_scores.tsv'), 'val', self.current_epoch, batch['qid'], batch['doc_ids'], output.q_scores)
-        log_batch_value(Path(self.expdir)/ Path('nll.tsv'), 'val', self.current_epoch, batch['qid'], batch['doc_ids'], output.lm_nll)
+        log_all(self.expdir, 'val', self.current_epoch, batch_idx, batch, output)
         return output.loss
 
+
+    def setup_tsv_files(self):
+        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
+        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
+        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
+        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
-def log_value(filename, stage, epoch, batch_idx, key, value):
-    with open(filename, 'a') as f:
-        f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}\n')
+class OnlyGeneratorTraining(pl.LightningModule):
+    def __init__(self, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
+        super().__init__()
+        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
+        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
+        #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
+        self.generator = Generator(self._generator, self._generator_tokenizer)
+        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                                      truncate_query_from_start = truncate_query_from_start,
+                                                      query_maxlen=query_maxlen,
+                                                      doc_maxlen=doc_maxlen)
+        saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
+        self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.reconstruction_loss_fn = ReconstructionLossFn(self.q_scorer, self.generator)
+        self.lr = lr
+        self.expdir = expdir
+        self.setup_tsv_files()
 
-def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_values):
-    with open(filename, 'a') as f:
-        for qid, doc_ids, values in zip(qids, batched_doc_ids, batched_values):
-            for doc_id, value in zip(doc_ids, values):
-                f.write(f'{stage}\t{epoch}\t{qid}\t{doc_id}\t{value}\n')
+
+    def training_step(self, batch, batch_idx):
+        # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        output: ReconstructionLoss = self.reconstruction_loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        self.my_log('train', batch_idx, batch, output)
+        return output.loss
+
+    def validation_step(self, batch, batch_idx):
+        output: ReconstructionLoss = self.reconstruction_loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        self.my_log('val', batch_idx, batch, output)
+        return output.loss
+
+    def my_log(self, loop, batch_idx, batch, output):
+        for name, value in [('loss', output.loss)]:
+            log_value(Path(self.expdir) / Path('metrics.tsv'), loop, self.current_epoch, batch_idx, name, value)
+
+        for fname, values in [('q_scores.tsv', output.q_scores),
+                              ('nll.tsv', output.lm_nll)]:
+            log_batch_value(Path(self.expdir) / fname, 'val', self.current_epoch, batch['qid'], batch['doc_ids'],
+                            values)
+
+    def setup_tsv_files(self):
+        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
+        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
+        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        return optimizer
+
+class OnlyRetrieverTraining(pl.LightningModule):
+    def __init__(self, loss_fn, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
+        super().__init__()
+        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                                      truncate_query_from_start = truncate_query_from_start,
+                                                      query_maxlen=query_maxlen,
+                                                      doc_maxlen=doc_maxlen)
+        saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
+        self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                                      truncate_query_from_start = truncate_query_from_start,
+                                                      query_maxlen=query_maxlen,
+                                                      doc_maxlen=doc_maxlen)
+        saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
+        self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.loss_fn = loss_fn(self.p_scorer, self.q_scorer)
+        self.lr = lr
+        self.expdir = expdir
+        self.setup_tsv_files()
+
+
+    def training_step(self, batch, batch_idx):
+        # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        output: KLDivergence = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        self.my_log('train', batch_idx, batch, output)
+        return output.loss
+
+    def validation_step(self, batch, batch_idx):
+        output: KLDivergence = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        self.my_log('val', batch_idx, batch, output)
+        return output.loss
+
+    def my_log(self, loop, batch_idx, batch, output):
+        for name, value in [('loss', output.loss)]:
+            log_value(Path(self.expdir) / Path('metrics.tsv'), loop, self.current_epoch, batch_idx, name, value)
+
+        for fname, values in [('p_scores.tsv', output.p_scores),
+                              ('q_scores.tsv', output.q_scores)]:
+            log_batch_value(Path(self.expdir) / fname, 'val', self.current_epoch, batch['qid'], batch['doc_ids'],
+                            values)
+
+    def setup_tsv_files(self):
+        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
+        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
+        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        return optimizer
+
 
 
 if __name__ == '__main__':
@@ -917,7 +1121,7 @@ if __name__ == '__main__':
     training_args_group = parser.add_argument_group(title='training args')
     training_args_group.add_argument('--batch_size', type=int, default=3, help='training batch size')
     training_args_group.add_argument('--loss_type', type=str, default='ELBO',
-                                     help='Training loss to use. Choices: [NLL, Marginalized, ELBO]')
+                                     help='Training loss to use. Choices: [NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg]')
     training_args_group.add_argument('--n_sampled_docs_train', type=int, default=8,
                                      help="Number of docs to sample for each instance (Marginalized, ELBO)")
     training_args_group.add_argument('--n_sampled_docs_valid', type=int, default=100,
