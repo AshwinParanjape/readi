@@ -42,6 +42,8 @@ def main(args):
             if parse_path is None:
                 continue
 
+            parse_path = parse_path.split(';')[0]  # if there's multiple, we'll take the first one
+
             with open(os.path.join(args.data, parse_path)) as g:
                 paper = ujson.load(g)
                 body = paper['body_text']
