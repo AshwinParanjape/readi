@@ -24,6 +24,7 @@ BackgroundHeadings = {'background', 'related work', 'literature review', 'relate
 def main(args):
     metadata = defaultdict(list)  # available for all papers, including those without full-text
     fulltext = {}  # only for full-text papers
+    fulltext_has_bg = {}
 
     with open(os.path.join(args.data, 'metadata.csv'), newline='') as csvfile:
         reader = csv.DictReader(csvfile, delimiter=',')
@@ -41,8 +42,14 @@ def main(args):
                     with open(os.path.join(args.data, 'document_parses', ftype, f'{sha}.json')) as g:
                         paper = ujson.load(g)
                         body = paper['body_text']
+
                         paper['has_bg'] = any(p['section'].lower() in BackgroundHeadings for p in body)
+
                         fulltext[sha] = paper
+
+                        if paper['has_bg']:
+                            fulltext_has_bg[sha] = paper
+
                         break
                 except:
                     pass
@@ -52,6 +59,10 @@ def main(args):
     with open(os.path.join(args.output, 'metadata.json'), 'w') as f:
         print("#> Writing to {f.name}...")
         ujson.dump(metadata, f)
+
+    with open(os.path.join(args.output, 'fulltext_has_bg.json'), 'w') as f:
+        print("#> Writing to {f.name}...")
+        ujson.dump(fulltext_has_bg, f)
 
     with open(os.path.join(args.output, 'fulltext.json'), 'w') as f:
         print("#> Writing to {f.name}...")
