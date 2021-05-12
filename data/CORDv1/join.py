@@ -36,7 +36,7 @@ def main(args):
             cid = row['cord_uid']
 
             parses = [row['pdf_json_files'], row['pmc_json_files']]
-            parses = [p for p in parser if len(p)]
+            parses = [p for p in parses if len(p)]
             parse_path = next(parses, None)
 
             metadata[cid].append(row)
