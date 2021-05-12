@@ -34,11 +34,13 @@ def main(args):
                 print(idx)
 
             cid = row['cord_uid']
+            metadata[cid].append(row)
 
             parses = [row['pdf_json_files'], row['pmc_json_files']]
             parse_path = next((p for p in parses if len(p)), None)
 
-            metadata[cid].append(row)
+            if parse_path is None:
+                continue
 
             with open(os.path.join(args.data, parse_path)) as g:
                 paper = ujson.load(g)
