@@ -1,12 +1,6 @@
-import os
-import math
-import tqdm
-import ujson
-import random
 import pickle
 
 from argparse import ArgumentParser
-from collections import defaultdict
 
 
 def main(args):
