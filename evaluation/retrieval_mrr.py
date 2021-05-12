@@ -11,8 +11,8 @@ def main(args):
         _ = f.readline()  # Header
         for line_idx, line in enumerate(f):
             line = line.strip().split('\t')
-            qid, pid, rank, score, text, title = line
-            qid, pid, rank = map(int, [qid, pid, rank])
+            qid, pid, *_ = line
+            qid, pid = map(int, [qid, pid])
             assert qid == line_idx, (qid, line_idx, line)
 
             Provs[qid] = pid
