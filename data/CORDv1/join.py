@@ -22,9 +22,9 @@ BackgroundHeadings = {'background', 'related work', 'literature review', 'relate
 
 
 def main(args):
-    metadata = defaultdict(list)  # available for all papers, including those without full-text
+    metadata = defaultdict(list)  # available for all papers
     fulltext = {}  # only for full-text papers
-    fulltext_has_bg = {}
+    fulltext_has_bg = {}  # only for papers with BG section(s)
 
     with open(os.path.join(args.data, 'metadata.csv'), newline='') as csvfile:
         reader = csv.DictReader(csvfile, delimiter=',')
@@ -32,41 +32,41 @@ def main(args):
         for idx, row in enumerate(reader):
             if idx % 20_000 == 0:
                 print(idx)
-            
-            sha = row['sha']
 
-            metadata[sha].append(row)
+            cid = row['cord_uid']
 
-            for ftype in ['pdf_json', 'pmc_json']:
-                try:
-                    with open(os.path.join(args.data, 'document_parses', ftype, f'{sha}.json')) as g:
-                        paper = ujson.load(g)
-                        body = paper['body_text']
+            parses = [row['pdf_json_files'], row['pmc_json_files']]
+            parses = [p for p in parser if len(p)]
+            parse_path = next(parses, None)
 
-                        paper['has_bg'] = any(p['section'].lower() in BackgroundHeadings for p in body)
+            metadata[cid].append(row)
 
-                        fulltext[sha] = paper
+            with open(os.path.join(args.data, parse_path)) as g:
+                paper = ujson.load(g)
+                body = paper['body_text']
 
-                        if paper['has_bg']:
-                            fulltext_has_bg[sha] = paper
+                paper['has_bg'] = any(p['section'].lower() in BackgroundHeadings for p in body)
 
-                        break
-                except:
-                    pass
-    
+                fulltext[cid] = paper
+
+                if paper['has_bg']:
+                    fulltext_has_bg[cid] = paper
+
     os.makedirs(args.output)
 
     with open(os.path.join(args.output, 'metadata.json'), 'w') as f:
-        print("#> Writing to {f.name}...")
+        print(f"#> Writing to {f.name}...")
         ujson.dump(metadata, f)
 
     with open(os.path.join(args.output, 'fulltext_has_bg.json'), 'w') as f:
-        print("#> Writing to {f.name}...")
+        print(f"#> Writing to {f.name}...")
         ujson.dump(fulltext_has_bg, f)
 
     with open(os.path.join(args.output, 'fulltext.json'), 'w') as f:
-        print("#> Writing to {f.name}...")
+        print(f"#> Writing to {f.name}...")
         ujson.dump(fulltext, f)
+    
+    print("#> Done.")
 
 
 if __name__ == "__main__":
