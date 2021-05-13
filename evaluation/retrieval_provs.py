@@ -53,11 +53,11 @@ def main(args):
                     if rank < k:
                         Success[k] += 1.0
 
-        MRR_100 = MRR_100 / len(Provs)
+        MRR_100 = MRR_100 / MRR_Denom
         MRR_100 = round(100 * MRR_100, 2)
 
         for k in Success:
-            Success[k] = Success[k] / len(Provs)
+            Success[k] = Success[k] / MRR_Denom
             Success[k] = round(100 * Success[k], 2)
             print(f"Success@{k} = {Success[k]}%")
 
