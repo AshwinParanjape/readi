@@ -575,6 +575,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                 if sampled_retrievals is None:
                     self.skipped_instances+=1
                     continue
+                sampled_retrievals['score_q'] = sampled_retrievals['score_q'].fillna(merged_retrievals['score_q'].min())
                 yield_dict = {'qid': qid,
                         'source': source,
                         'target': target,
@@ -826,7 +827,7 @@ class InheritableCheckpointMixin():
     @classmethod
     def init_from_checkpoints(cls, state_dict, **init_kwargs):
         obj = cls(**init_kwargs)
-        obj.load_state_dict(state_dict)
+        obj.load_state_dict(state_dict, strict=False)
         obj.set_loss_fn()
         return obj
 
@@ -1076,7 +1077,7 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
 
         for fname, values in [('q_scores.tsv', output.q_scores),
                               ('nll.tsv', output.lm_nll)]:
-            log_batch_value(Path(self.expdir) / fname, 'val', self.current_epoch, batch['qid'], batch['doc_ids'],
+            log_batch_value(Path(self.expdir) / fname, loop, self.current_epoch, batch['qid'], batch['doc_ids'],
                             values)
 
     def setup_tsv_files(self):
@@ -1157,7 +1158,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
 
         for fname, values in [('p_scores.tsv', output.p_scores),
                               ('q_scores.tsv', output.q_scores)]:
-            log_batch_value(Path(self.expdir) / fname, 'val', self.current_epoch, batch['qid'], batch['doc_ids'],
+            log_batch_value(Path(self.expdir) / fname, loop, self.current_epoch, batch['qid'], batch['doc_ids'],
                             values)
 
     def setup_tsv_files(self):
@@ -1338,7 +1339,8 @@ if __name__ == '__main__':
                 p_scorer_checkpoint=args.p_scorer_checkpoint)
         else:
             assert False
-        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr,
+        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, query_maxlen=args.query_maxlen,
+                                                     doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
                                                         truncate_query_from_start=args.truncate_query_from_start)
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
@@ -1368,7 +1370,26 @@ if __name__ == '__main__':
                                 args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
                                 yield_scores = secondary_training)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-    elif args.loss_type in {'ELBO',  'KLD', 'PosNeg'} :
+    elif args.loss_type in {'KLD'}:
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler'}
+        if args.doc_sampler == 'GuidedDocumentSampler':
+            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
+        elif args.doc_sampler == 'RankPNDocumentSampler':
+            doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
+        elif args.doc_sampler == 'PosteriorDocumentSampler':
+            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+        else:
+            assert False
+        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                  args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                  yield_scores=secondary_training)
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+        val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
+                                args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
+                                yield_scores = secondary_training)
+        val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+
+    elif args.loss_type in {'ELBO',  'PosNeg'} :
         assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
