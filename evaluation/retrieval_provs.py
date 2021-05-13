@@ -23,7 +23,6 @@ def main(args):
             Ranking = pickle.load(f)
 
         assert len(Ranking) == len(Provs), (len(Ranking), len(Provs))
-        assert set(Ranking.keys()) == set(Provs.keys())
 
         Success = {k: 0.0 for k in [1, 5, 10, 20, 50, 100]}
         MRR_100 = 0.0
