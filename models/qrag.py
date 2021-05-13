@@ -543,7 +543,7 @@ class PDataset(torch.utils.data.IterableDataset):
 
 
 class PQDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False):
+    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False, include_unrelated=True):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
@@ -563,6 +563,7 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.n_workers = n_workers
         self.skipped_instances = 0
         self.yield_scores = yield_scores
+        self.include_unrelated = include_unrelated
 
     def __iter__(self):
         # Important: doc_scores are the Q retriever scores
@@ -586,12 +587,13 @@ class PQDataset(torch.utils.data.IterableDataset):
                     yield_dict['doc_scores'] = torch.tensor(sampled_retrievals['score_q'].tolist())
 
                 yield yield_dict
-                if self.unrelated_retrievals is not None:
-                    self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
-                    if len(self.unrelated_retrievals)>2000:
-                        self.unrelated_retrievals.sample(2000)
-                else:
-                    self.unrelated_retrievals = merged_retrievals.sample(n=2)
+                if include_unrelated:
+                    if self.unrelated_retrievals is not None:
+                        self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
+                        if len(self.unrelated_retrievals)>2000:
+                            self.unrelated_retrievals.sample(2000)
+                    else:
+                        self.unrelated_retrievals = merged_retrievals.sample(n=2)
 
     #def __len__(self):
     #    return (len(self.source)//self.n_workers)-self.skipped_instances
@@ -1362,11 +1364,11 @@ if __name__ == '__main__':
         doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training)
+                                  yield_scores=secondary_training, include_unrelated=False)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
                                 args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
-                                yield_scores = secondary_training)
+                                yield_scores = secondary_training, include_unrelated=False)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'ELBO',  'KLD', 'PosNeg'} :
         assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler'}
