@@ -18,9 +18,25 @@ def main(args):
             Provs[qid] = pid
 
     for path in args.ranking:
-        with open(path, 'rb') as f:
-            print(f"Loading {f.name}...")
-            Ranking = pickle.load(f)
+        if path.endswith('.tsv'):
+            Ranking = defaultdict(list)
+
+            with open(path) as f:
+                print(f"Loading {f.name}...")
+                for line in f:
+                    line = line.strip().split('\t')
+                    qid, pid, *_ = line
+                    qid, pid = map(int, [qid, pid])
+
+                    Ranking[qid].append(pid)
+            
+            for qid in Ranking:
+                Ranking[qid] = {'qid': qid, 'retrievals': Ranking[qid]}
+                
+        else:
+            with open(path, 'rb') as f:
+                print(f"Loading {f.name}...")
+                Ranking = pickle.load(f)
 
         assert len(Ranking) == len(Provs), (len(Ranking), len(Provs))
 
@@ -37,7 +53,7 @@ def main(args):
 
             MRR_Denom += 1
 
-            target = ranking['target']
+            # target = ranking['target']
             ranking = ranking['retrievals'][:100]
             ranking_pids = [x['doc_id'] for x in ranking]
 
