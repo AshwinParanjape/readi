@@ -587,7 +587,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                     yield_dict['doc_scores'] = torch.tensor(sampled_retrievals['score_q'].tolist())
 
                 yield yield_dict
-                if include_unrelated:
+                if self.include_unrelated:
                     if self.unrelated_retrievals is not None:
                         self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
                         if len(self.unrelated_retrievals)>2000:
