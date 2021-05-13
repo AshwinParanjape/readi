@@ -31,7 +31,7 @@ def main(args):
                     Ranking[qid].append(pid)
             
             for qid in Ranking:
-                Ranking[qid] = {'qid': qid, 'retrievals': Ranking[qid]}
+                Ranking[qid] = {'qid': qid, 'retrievals': [{'doc_id': pid} for pid in Ranking[qid]]}
                 
         else:
             with open(path, 'rb') as f:
