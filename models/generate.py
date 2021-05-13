@@ -137,7 +137,7 @@ def collate_fn(batch: Dict):
     )
     collated['doc_ids'] = [d['doc_ids'] for d in batch ]
     collated['doc_texts'] = [d['doc_texts'] for d in batch ]
-    collated['doc_scores'] = [d['doc_scores'] for d in batch ]
+    collated['doc_scores'] = [d['doc_scores'].tolist() for d in batch ]
     return collated
 
 def generate():
