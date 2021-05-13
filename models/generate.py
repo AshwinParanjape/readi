@@ -133,11 +133,11 @@ def collate_fn(batch: Dict):
     # Differs from the qrag.collate function in that the doc_scores aren't concatenated as tensors
 
     collated = default_collate(
-        [{k:v for k, v in d.items() if k in {'qid', 'source', 'target', 'doc_scores'}} for d in batch]
+        [{k:v for k, v in d.items() if k in {'qid', 'source', 'target'}} for d in batch]
     )
     collated['doc_ids'] = [d['doc_ids'] for d in batch ]
     collated['doc_texts'] = [d['doc_texts'] for d in batch ]
-    collated['doc_scores'] = [d['doc_scores'] for d in batch ]
+    collated['doc_scores'] = [d['doc_scores'].tolist() for d in batch ]
     return collated
 
 def generate():
