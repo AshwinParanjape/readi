@@ -436,10 +436,46 @@ class GuidedDocumentSampler(DocumentSampler):
         # Add a few more on an ad-hoc basis
         if len(mixed_samples) < self.n:
             diff = self.n - len(mixed_samples)
-            q_docs = retrievals[(retrievals['score_q'].notna())].copy()
+            q_docs = retrievals[(retrievals['score_q'].notna()) & ~(retrievals['pid'].isin(mixed_samples['pid']))].copy()
             q_docs['score'] = q_docs['score_q']
             extra_samples = SimpleDocumentSampler(diff, self.temperature, self.top_k)(q_docs)
-            mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, extra_samples, unrelated_samples])
+            if unrelated_retrievals is not None:
+                mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, extra_samples, unrelated_samples])
+            else:
+                mixed_samples = pd.concat([p_intersection_q_samples, p_minus_q_samples, q_minus_p_samples, extra_samples])
+
+        return mixed_samples
+
+class PosteriorDocumentSampler(DocumentSampler):
+    def __init__(self, n, temperature=1, top_k=None):
+        self.n = n
+        self.temperature=temperature
+        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        self.top_k = top_k
+        self.p_intersection_q_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
+        self.q_minus_p_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
+        p_intersection_q = retrievals[(retrievals['score_p'].notna()) & (retrievals['score_q'].notna())].copy()
+        p_intersection_q['score'] = p_intersection_q['score_q']
+        p_intersection_q_samples = self.p_intersection_q_sampler(p_intersection_q)
+
+        q_minus_p = retrievals[(retrievals['score_q'].notna()) & (retrievals['score_p'].isna())].copy()
+        q_minus_p['score'] = q_minus_p['score_q']
+        q_minus_p_samples = self.q_minus_p_sampler(q_minus_p)
+
+        mixed_samples = pd.concat([p_intersection_q_samples, q_minus_p_samples])
+
+
+        # If not enough samples were gotten (because some of the three sets not containing enough to sample from)
+        # Add a few more on an ad-hoc basis
+        if len(mixed_samples) < self.n:
+            diff = self.n - len(mixed_samples)
+            q_docs = retrievals[(retrievals['score_q'].notna()) & ~(retrievals['pid'].isin(mixed_samples['pid']))].copy()
+            q_docs['score'] = q_docs['score_q']
+            extra_samples = SimpleDocumentSampler(diff, self.temperature, self.top_k)(q_docs)
+            mixed_samples = pd.concat([p_intersection_q_samples, q_minus_p_samples, extra_samples])
 
         return mixed_samples
 
@@ -500,14 +536,14 @@ class PDataset(torch.utils.data.IterableDataset):
                         'doc_texts': sampled_retrievals['text'].tolist(),
                         }
                 if self.yield_scores:
-                    yield_dict['doc_scores'] = sampled_retrievals['score'].tolist()
+                    yield_dict['doc_scores'] = torch.tensor(sampled_retrievals['score'].tolist())
                 yield yield_dict
     def __len__(self):
         return len(self.source)//self.n_workers
 
 
 class PQDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1):
+    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
@@ -526,8 +562,10 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.worker_id = worker_id
         self.n_workers = n_workers
         self.skipped_instances = 0
+        self.yield_scores = yield_scores
 
     def __iter__(self):
+        # Important: doc_scores are the Q retriever scores
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
@@ -537,12 +575,17 @@ class PQDataset(torch.utils.data.IterableDataset):
                 if sampled_retrievals is None:
                     self.skipped_instances+=1
                     continue
-                yield {'qid': qid,
+                yield_dict = {'qid': qid,
                         'source': source,
                         'target': target,
                         'doc_ids': sampled_retrievals['pid'].tolist(),
                         'doc_texts': sampled_retrievals['text'].tolist()
-                 }
+                }
+
+                if self.yield_scores:
+                    yield_dict['doc_scores'] = torch.tensor(sampled_retrievals['score_q'].tolist())
+
+                yield yield_dict
                 if self.unrelated_retrievals is not None:
                     self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
                     if len(self.unrelated_retrievals)>2000:
@@ -557,12 +600,12 @@ class PQDataset(torch.utils.data.IterableDataset):
 # TODO: override collate function to simply collate tuples into a list
 def collate_fn(batch: Dict):
     collated = default_collate(
-        [{k:v for k, v in d.items() if k in {'qid', 'source', 'target'}} for d in batch]
+        [{k:v for k, v in d.items() if k in {'qid', 'source', 'target', 'doc_scores'}} for d in batch]
     )
     collated['doc_ids'] = [d['doc_ids'] for d in batch ]
     collated['doc_texts'] = [d['doc_texts'] for d in batch ]
     if 'doc_scores' in batch[0]:
-        collated['doc_scores'] = [d['doc_scores'] for d in batch ]
+        collated.update(default_collate([{'doc_scores': d['doc_scores']} for d in batch]))
     return collated
 
 @dataclass
@@ -735,70 +778,6 @@ class ELBO():
         return [('p_scores.tsv', self.p_scores),
                 ('q_scores.tsv', self.q_scores),
                 ('nll.tsv', self.lm_nll)]
-@dataclass
-class ReconstructionLoss():
-    loss: Union[float, torch.Tensor]
-    lm_nll: torch.Tensor
-    q_scores: torch.Tensor
-    @property
-    def metrics(self):
-        return [('loss', self.loss)]
-
-    @property
-    def intermediate_values(self):
-        return [('nll', self.lm_nll), ('q_scores', self.q_scores)]
-
-
-class ReconstructionLossFn(torch.nn.Module):
-    def __init__(self, q_scorer:ColBERTScorer, generator: Generator):
-        super().__init__()
-        self.q_scorer = q_scorer
-        self.q_scorer.eval()
-        self.generator = generator
-        self.generator_nll = LM_NLL(self.generator)
-
-    def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
-        st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
-        q_scores = self.q_scorer(st_text, batched_docs)
-        q_probs = stable_softmax(q_scores, dim=1)
-        generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
-
-        reconstruction_loss = -(q_probs * generator_log_prob).sum()
-        return ReconstructionLoss(reconstruction_loss, -generator_log_prob, q_scores)
-
-@dataclass
-class KLDivergence():
-    loss: Union[float, torch.Tensor]
-    p_scores: torch.Tensor
-    q_scores: torch.Tensor
-
-    @property
-    def metrics(self):
-        return [('loss', self.loss)]
-
-    @property
-    def intermediate_values(self):
-        return [('p_scores', self.p_scores), ('q_scores', self.q_scores)]
-
-class KLDivergenceFn(torch.nn.Module):
-    def __init__(self, p_scorer: ColBERTScorer, q_scorer:ColBERTScorer):
-        super().__init__()
-        self.q_scorer = q_scorer
-        self.q_scorer.eval()
-        self.p_scorer = p_scorer
-        self.p_scorer.eval()
-
-    def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
-        st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
-        p_scores = self.p_scorer(sources, batched_docs)
-        p_probs = stable_softmax(p_scores, dim=1)
-        q_scores = self.q_scorer(st_text, batched_docs)
-        q_probs = stable_softmax(q_scores, dim=1)
-        kl_regularization = (q_probs * (q_probs.log() - p_probs.log())).sum()
-
-        return KLDivergence(kl_regularization, p_scores, q_scores)
-
-
 
 class ELBOFn(torch.nn.Module):
     def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator):
@@ -843,6 +822,15 @@ def log_all(expdir, loop, current_epoch, batch_idx, batch, output):
     for fname, values in output.intermediate_values:
         log_batch_value(Path(expdir) / fname, loop, current_epoch, batch['qid'], batch['doc_ids'], values)
 
+class InheritableCheckpointMixin():
+    @classmethod
+    def init_from_checkpoints(cls, state_dict, **init_kwargs):
+        obj = cls(**init_kwargs)
+        obj.load_state_dict(state_dict)
+        obj.set_loss_fn()
+        return obj
+
+
 class NLLLossSystem(pl.LightningModule):
     def __init__(self, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
@@ -878,7 +866,7 @@ class NLLLossSystem(pl.LightningModule):
         return optimizer
 
 class MarginalizedLossSystem(pl.LightningModule):
-    def __init__(self, p_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
+    def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -890,9 +878,9 @@ class MarginalizedLossSystem(pl.LightningModule):
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen,
                                           )
-        saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
-        self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
-        self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator)
+        #saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
+        #self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.set_loss_fn()
 
         self.expdir = expdir
         self.lr = lr
@@ -902,6 +890,24 @@ class MarginalizedLossSystem(pl.LightningModule):
             f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
         with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
+    @staticmethod
+    def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        state_dict = {'p_scorer.'+k: v for k, v in p_scorer_checkpoint.items()}
+        return state_dict
+
+    def set_loss_fn(self):
+        self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator)
+
+    @staticmethod
+    def extract_state_dict_from_checkpoints(p_scorer_checkpoint, generator_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
+        state_dict = filter_state_dict(generator_checkpoint, 'generator')
+        state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
+        state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
+        return state_dict
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
@@ -928,8 +934,8 @@ class MarginalizedLossSystem(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
-class ELBOLossSystem(pl.LightningModule):
-    def __init__(self, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
+class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
+    def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -940,20 +946,44 @@ class ELBOLossSystem(pl.LightningModule):
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen)
-        saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
-        self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        if p_scorer_checkpoint:
+            saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
+            self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
 
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen)
-        saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
-        self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
-        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator)
+        if q_scorer_checkpoint:
+            saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
+            self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
         self.setup_tsv_files()
 
+
+    @staticmethod
+    def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
+        state_dict = {'p_scorer.'+k: v for k, v in p_scorer_checkpoint.items()}
+        state_dict.update({'q_scorer.'+k: v for k, v in q_scorer_checkpoint.items()})
+        return state_dict
+
+    def set_loss_fn(self):
+        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator)
+
+    @staticmethod
+    def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint, generator_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
+        generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
+        state_dict = filter_state_dict(generator_checkpoint, 'generator')
+        state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
+        state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
+        state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
+        return state_dict
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
@@ -981,34 +1011,62 @@ class ELBOLossSystem(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
-class OnlyGeneratorTraining(pl.LightningModule):
-    def __init__(self, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
+@dataclass
+class ReconstructionLoss():
+    loss: Union[float, torch.Tensor]
+    lm_nll: torch.Tensor
+    q_scores: torch.Tensor
+    @property
+    def metrics(self):
+        return [('loss', self.loss)]
+
+    @property
+    def intermediate_values(self):
+        return [('nll', self.lm_nll), ('q_scores', self.q_scores)]
+
+
+class ReconstructionLossFn(torch.nn.Module):
+    def __init__(self, generator: Generator):
+        super().__init__()
+        self.generator = generator
+        self.generator_nll = LM_NLL(self.generator)
+
+    def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor):
+        q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
+        generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
+
+        reconstruction_loss = -(q_probs * generator_log_prob).sum()
+        return ReconstructionLoss(reconstruction_loss, -generator_log_prob, q_scores)
+
+class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
+    # We assume that the Q scorer is fixed and hence doesn't need to be run
+    def __init__(self, expdir='', lr=1e-3, truncate_query_from_start=False):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
-        #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
-        #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         self.generator = Generator(self._generator, self._generator_tokenizer)
-        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
-                                                      truncate_query_from_start = truncate_query_from_start,
-                                                      query_maxlen=query_maxlen,
-                                                      doc_maxlen=doc_maxlen)
-        saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
-        self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
-        self.reconstruction_loss_fn = ReconstructionLossFn(self.q_scorer, self.generator)
         self.lr = lr
         self.expdir = expdir
         self.setup_tsv_files()
 
+    def set_loss_fn(self):
+        self.loss_fn = ReconstructionLossFn(self.generator)
+
+    @staticmethod
+    def extract_state_dict_from_checkpoints(generator_checkpoint):
+        generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
+        state_dict = filter_state_dict(generator_checkpoint, 'generator')
+        state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
+        return state_dict
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
-        output: ReconstructionLoss = self.reconstruction_loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores'])
         self.my_log('train', batch_idx, batch, output)
         return output.loss
 
     def validation_step(self, batch, batch_idx):
-        output: ReconstructionLoss = self.reconstruction_loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores'])
         self.my_log('val', batch_idx, batch, output)
         return output.loss
 
@@ -1033,35 +1091,63 @@ class OnlyGeneratorTraining(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
-class OnlyRetrieverTraining(pl.LightningModule):
-    def __init__(self, loss_fn, p_scorer_checkpoint, q_scorer_checkpoint, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
+@dataclass
+class KLDivergence():
+    loss: Union[float, torch.Tensor]
+    p_scores: torch.Tensor
+    q_scores: torch.Tensor
+
+    @property
+    def metrics(self):
+        return [('loss', self.loss)]
+
+    @property
+    def intermediate_values(self):
+        return [('p_scores', self.p_scores), ('q_scores', self.q_scores)]
+
+class KLDivergenceFn(torch.nn.Module):
+    def __init__(self, p_scorer: ColBERTScorer):
+        super().__init__()
+        self.p_scorer = p_scorer
+
+    def forward(self, sources: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor):
+        q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
+        p_scores = self.p_scorer(sources, batched_docs)
+        p_probs = stable_softmax(p_scores, dim=1)
+        kl_regularization = (q_probs * (q_probs.log() - p_probs.log())).sum()
+        return KLDivergence(kl_regularization, p_scores, q_scores)
+
+
+class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
+    def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
         super().__init__()
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen)
-        saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
-        self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
-        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
-                                                      truncate_query_from_start = truncate_query_from_start,
-                                                      query_maxlen=query_maxlen,
-                                                      doc_maxlen=doc_maxlen)
-        saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
-        self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
-        self.loss_fn = loss_fn(self.p_scorer, self.q_scorer)
+        self.loss_fn_constructor = loss_fn
+        self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
         self.setup_tsv_files()
 
+    def set_loss_fn(self):
+        self.loss_fn = self.loss_fn_constructor(self.p_scorer)
+
+    @staticmethod
+    def extract_state_dict_from_checkpoints(p_scorer_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        state_dict = filter_state_dict(p_scorer_checkpoint, 'p_scorer')
+        return state_dict
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
-        output: KLDivergence = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        output: KLDivergence = self.loss_fn(batch['source'], batch['doc_texts'], batch['doc_scores'])
         self.my_log('train', batch_idx, batch, output)
         return output.loss
 
     def validation_step(self, batch, batch_idx):
-        output: KLDivergence = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        output: KLDivergence = self.loss_fn(batch['source'],batch['doc_texts'], batch['doc_scores'])
         self.my_log('val', batch_idx, batch, output)
         return output.loss
 
@@ -1086,6 +1172,8 @@ class OnlyRetrieverTraining(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
+def filter_state_dict(ckpt, key):
+    return {k: v for k, v in ckpt['state_dict'].items() if k.startswith(key)}
 
 
 if __name__ == '__main__':
@@ -1094,10 +1182,16 @@ if __name__ == '__main__':
     base_path = Path('/u/scr/ashwinp/research/readi')
     rerank_exp_base_path = Path('/scr/biggest/ashwinp/experiments/colbert-rerank/')
     scorer_group = parser.add_argument_group(title='scorer (ColBERT) args')
-    scorer_group.add_argument('--p_scorer_checkpoint', default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
     scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
+
+    checkpoints_group = parser.add_argument_group(title='paths to various checkpoints')
+    checkpoints_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can be from colbert or qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
+    checkpoints_group.add_argument('--q_scorer_checkpoint', type=str, help="Path to q_scorer checkpoint, can be from colbert or qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
+    checkpoints_group.add_argument('--scorer_checkpoint_type', type=str, help="The scorer checkpoints were generated by: colbert, qtraining")
+    checkpoints_group.add_argument('--generator_checkpoint', default=None, type=str, help='Path to generator checkpoint')
+    checkpoints_group.add_argument('--resume_training_from_checkpoint', type=str, help="Optional, if given, loads the scorers and generator from the checkpoint. Resumes training using the resumed pytorch lightning trainer.resumed ")
 
     paths_group = parser.add_argument_group(title='input file paths')
     paths_group.add_argument('--train_source_path', type=str, default=(base_path / 'data/nq/train.source').as_posix(),
@@ -1120,7 +1214,7 @@ if __name__ == '__main__':
 
     training_args_group = parser.add_argument_group(title='training args')
     training_args_group.add_argument('--batch_size', type=int, default=3, help='training batch size')
-    training_args_group.add_argument('--loss_type', type=str, default='ELBO',
+    training_args_group.add_argument('--loss_type', type=str,
                                      help='Training loss to use. Choices: [NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg]')
     training_args_group.add_argument('--n_sampled_docs_train', type=int, default=8,
                                      help="Number of docs to sample for each instance (Marginalized, ELBO)")
@@ -1133,15 +1227,21 @@ if __name__ == '__main__':
     training_args_group.add_argument('--lr', type=float, default=1e-6, help='Adam\'s Learning rate')
     training_args_group.add_argument('--accumulate_grad_batches', type=int, default=16, help='Accumulate gradients for given number of batches')
     training_args_group.add_argument('--gpus', type=int, default=1, help='Number of gpus to use')
-    training_args_group.add_argument('--doc_sampler', type=str, default='GuidedDocumentSampler',
-                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}')
+    training_args_group.add_argument('--doc_sampler', type=str,
+                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}, PosteriorDocumentSampler(Reconstruction)')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
-    training_args_group.add_argument('--resume_from_checkpoint', type=str, help="Optional, if given, loads the scorers and generator from the checkpoint. Resumes training using the resumed pytorch lightning trainer.resumed ")
     training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
 
 
     Experiment.add_argument_group(parser)
     args = parser.parse_args()
+    if args.resume_training_from_checkpoint:
+        print(f"Resuming all internal models from {args.resume_training_from_checkpoint}")
+        args.p_scorer_checkpoint = args.resume_training_from_checkpoint
+        args.q_scorer_checkpoint = args.resume_training_from_checkpoint
+        args.generator_checkpoint = args.resume_training_from_checkpoint
+        args.scorer_checkpoint_type = 'qtraining'
+
     if node_rank ==0 and local_rank == 0:
         experiment = Experiment.from_parser(parser)
         curexpdir = experiment.curexpdir
@@ -1152,48 +1252,98 @@ if __name__ == '__main__':
     # The code won't work with multiple nodes, for which one needs to have a global rank and world size
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
     checkpoint_callback = ModelCheckpoint(monitor=None, save_top_k=-1)
-    if args.resume_from_checkpoint:
+    if args.resume_training_from_checkpoint:
         print("Overriding the model using the checkpoint")
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
                           accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches)
         trainer.max_epochs = trainer.current_epoch+args.max_epochs
-        if args.loss_type == 'NLL':
-            model = NLLLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
-                                                       lr=args.lr, expdir=curexpdir,
-                                                       truncate_query_from_start=args.truncate_query_from_start)
-        elif args.loss_type == 'Marginalized':
-            model = MarginalizedLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
-                                                                p_scorer_checkpoint= args.p_scorer_checkpoint,
-                                                                query_maxlen=args.query_maxlen,
-                                                                doc_maxlen=args.doc_maxlen,
-                                                                expdir=curexpdir, lr=args.lr,
-                                                                truncate_query_from_start=args.truncate_query_from_start)
-        elif args.loss_type == 'ELBO':
-            model = ELBOLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
-                                                        p_scorer_checkpoint=args.p_scorer_checkpoint,
-                                                        q_scorer_checkpoint=args.p_scorer_checkpoint,
-                                                        query_maxlen=args.query_maxlen,
-                                                        doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
-                                                        truncate_query_from_start=args.truncate_query_from_start)
+
+        #if args.loss_type == 'NLL':
+        #    model = NLLLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
+        #                                               lr=args.lr, expdir=curexpdir,
+        #                                               truncate_query_from_start=args.truncate_query_from_start)
+        #elif args.loss_type == 'Marginalized':
+        #    model = MarginalizedLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
+        #                                                        p_scorer_checkpoint= args.p_scorer_checkpoint,
+        #                                                        query_maxlen=args.query_maxlen,
+        #                                                        doc_maxlen=args.doc_maxlen,
+        #                                                        expdir=curexpdir, lr=args.lr,
+        #                                                        truncate_query_from_start=args.truncate_query_from_start)
+        #elif args.loss_type == 'ELBO':
+        #    model = ELBOLossSystem.load_from_checkpoint(checkpoint_path=args.resume_from_checkpoint,
+        #                                                p_scorer_checkpoint=args.p_scorer_checkpoint,
+        #                                                q_scorer_checkpoint=args.p_scorer_checkpoint,
+        #                                                query_maxlen=args.query_maxlen,
+        #                                                doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
+        #                                                truncate_query_from_start=args.truncate_query_from_start)
 
 
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
                           accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches)
-        if args.loss_type == 'NLL':
-            model = NLLLossSystem(lr=args.lr, expdir=curexpdir,
-                                  truncate_query_from_start=args.truncate_query_from_start)
-        elif args.loss_type == 'Marginalized':
-            model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen,
-                                           expdir=curexpdir, lr=args.lr,
-                                           truncate_query_from_start=args.truncate_query_from_start)
-        elif args.loss_type == 'ELBO':
-            model = ELBOLossSystem(args.p_scorer_checkpoint, args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start)
-        else:
-            assert False, "loss_type not in {NLL, Marginalized, ELBO}"
 
+    # Create models
+    if args.loss_type == 'NLL':
+        # Still old style
+        model = NLLLossSystem(lr=args.lr, expdir=curexpdir,
+                              truncate_query_from_start=args.truncate_query_from_start)
+
+    elif args.loss_type == 'Marginalized':
+        # Still old style loading from checkpoints
+        #TODO, test if the following are identical
+        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen,
+                                       expdir=curexpdir, lr=args.lr,
+                                       truncate_query_from_start=args.truncate_query_from_start)
+        if args.scorer_checkpoint_type == 'colbert':
+            state_dict = NLLLossSystem.extract_state_dict_from_colbert_checkpoints(
+                p_scorer_checkpoint=args.p_scorer_checkpoint)
+        elif args.scorer_checkpoint_type == 'qtraining':
+            state_dict = NLLLossSystem.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
+                                                                           generator_checkpoint=args.generator_checkpoint)
+        else:
+            assert False
+        model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen,
+                                                     doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
+                                                     truncate_query_from_start=args.truncate_query_from_start)
+    elif args.loss_type == 'ELBO':
+        #TODO, test if the following are identical
+        model = ELBOLossSystem(args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start, p_scorer_checkpoint=args.p_scorer_checkpoint, q_scorer_checkpoint=args.q_scorer_checkpoint, )
+        if args.scorer_checkpoint_type == 'colbert':
+            state_dict = ELBOLossSystem.extract_state_dict_from_colbert_checkpoints(
+                p_scorer_checkpoint=args.p_scorer_checkpoint, q_scorer_checkpoint=args.q_scorer_checkpoint)
+        elif args.scorer_checkpoint_type == 'qtraining':
+            state_dict = NLLLossSystem.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
+                                                                           q_scorer_checkpoint=args.q_scorer_checkpoint,
+                                                                           generator_checkpoint=args.generator_checkpoint)
+        else:
+            assert False
+
+        model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
+                                                     expdir=curexpdir, lr=args.lr,
+                                                     truncate_query_from_start=args.truncate_query_from_start)
+    elif args.loss_type == 'Reconstruction':
+        state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
+        model = OnlyGeneratorTraining.init_from_checkpoints(state_dict,  expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
+    elif args.loss_type == 'KLD' or args.loss_type=='PosNeg':
+        if args.loss_type == 'KLD':
+            loss_fn = KLDivergenceFn
+        elif args.loss_type == 'PosNeg':
+            loss_fn = None
+        else:
+            raise False
+        if args.scorer_checkpoint_type == 'qtraining':
+            state_dict = OnlyRetrieverTraining.extract_state_dict_from_checkpoints(
+                p_scorer_checkpoint=args.p_scorer_checkpoint)
+        else:
+            assert False
+        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr,
+                                                        truncate_query_from_start=args.truncate_query_from_start)
+    else:
+            assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
+
+    secondary_training = args.loss_type in {'Reconstruction', 'KLD', 'PosNeg'}
     if args.loss_type == 'NLL':
         train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
@@ -1207,10 +1357,21 @@ if __name__ == '__main__':
         val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-    elif args.loss_type == 'ELBO':
-        assert args.doc_sampler == 'GuidedDocumentSampler' or args.doc_sampler == 'GuidedNoIntersectionDocumentSampler' or args.doc_sampler == 'RankPNDocumentSampler'
+    elif args.loss_type == 'Reconstruction':
+        assert args.doc_sampler in {'PosteriorDocumentSampler'}
+        doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                  args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                  yield_scores=secondary_training)
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+        val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
+                                args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
+                                yield_scores = secondary_training)
+        val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+    elif args.loss_type in {'ELBO',  'KLD', 'PosNeg'} :
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
-            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
             doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'RankPNDocumentSampler':
@@ -1218,11 +1379,14 @@ if __name__ == '__main__':
         else:
             assert False
 
-        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
+        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                  args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                  yield_scores=secondary_training)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
-        #val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, args.val_q_ranked_passages, doc_sampler)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid,
+                                                temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
+                               worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     #trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
