@@ -868,7 +868,7 @@ class NLLLossSystem(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
-class MarginalizedLossSystem(pl.LightningModule):
+class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
