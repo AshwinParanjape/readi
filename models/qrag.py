@@ -809,11 +809,13 @@ class ELBOFn(torch.nn.Module):
 
 
 def log_value(filename, stage, epoch, batch_idx, key, value):
-    with open(filename, 'a') as f:
+    epoch_filename = filename.stem+'_'+str(epoch)+filename.suffix
+    with open(epoch_filename, 'a') as f:
         f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}\n')
 
 def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_values):
-    with open(filename, 'a') as f:
+    epoch_filename = filename.stem+'_'+str(epoch)+filename.suffix
+    with open(epoch_filename, 'a') as f:
         for qid, doc_ids, values in zip(qids, batched_doc_ids, batched_values):
             for doc_id, value in zip(doc_ids, values):
                 f.write(f'{stage}\t{epoch}\t{qid}\t{doc_id}\t{value}\n')
@@ -844,8 +846,6 @@ class NLLLossSystem(pl.LightningModule):
         self.loss_fn = LM_NLL(self.generator)
         self.expdir=expdir
         self.lr = lr
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
-            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
@@ -868,6 +868,13 @@ class NLLLossSystem(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
+
+    def setup_tsv_files(self):
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
 class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
@@ -887,12 +894,6 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
 
         self.expdir = expdir
         self.lr = lr
-        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
-            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
-        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
-            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
-            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     @staticmethod
     def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint):
@@ -937,6 +938,17 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
+
+    def setup_tsv_files(self):
+        with open(Path(self.expdir) / Path(f'p_scores_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
+        with open(Path(self.expdir) / Path(f'nll_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None):
         super().__init__()
@@ -963,8 +975,10 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
-        self.setup_tsv_files()
 
+
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
 
     @staticmethod
     def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint):
@@ -1001,13 +1015,13 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
 
 
     def setup_tsv_files(self):
-        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'p_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
-        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'q_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
-        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'nll_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
@@ -1050,6 +1064,8 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.lr = lr
         self.expdir = expdir
+
+    def on_train_epoch_start(self):
         self.setup_tsv_files()
 
     def set_loss_fn(self):
@@ -1083,11 +1099,11 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
                             values)
 
     def setup_tsv_files(self):
-        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'q_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
-        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'nll_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
@@ -1132,10 +1148,10 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
-        self.setup_tsv_files()
 
     def set_loss_fn(self):
         self.loss_fn = self.loss_fn_constructor(self.p_scorer)
+
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint):
@@ -1162,13 +1178,15 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
                               ('q_scores.tsv', output.q_scores)]:
             log_batch_value(Path(self.expdir) / fname, loop, self.current_epoch, batch['qid'], batch['doc_ids'],
                             values)
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
 
     def setup_tsv_files(self):
-        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'p_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
-        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'q_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
