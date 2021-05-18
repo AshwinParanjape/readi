@@ -1252,6 +1252,7 @@ if __name__ == '__main__':
                                      help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}, PosteriorDocumentSampler(Reconstruction)')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
+    training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
 
 
     Experiment.add_argument_group(parser)
@@ -1277,7 +1278,7 @@ if __name__ == '__main__':
         print("Overriding the model using the checkpoint")
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches)
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
         trainer.max_epochs = trainer.current_epoch+args.max_epochs
 
         #if args.loss_type == 'NLL':
@@ -1303,7 +1304,7 @@ if __name__ == '__main__':
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches)
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
 
     # Create models
     if args.loss_type == 'NLL':
