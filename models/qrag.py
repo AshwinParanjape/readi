@@ -1411,13 +1411,15 @@ if __name__ == '__main__':
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
             doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'RankPNDocumentSampler':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
+        elif args.doc_sampler == 'PosteriorDocumentSampler':
+            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         else:
             assert False
 
