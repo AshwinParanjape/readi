@@ -809,12 +809,12 @@ class ELBOFn(torch.nn.Module):
 
 
 def log_value(filename, stage, epoch, batch_idx, key, value):
-    epoch_filename = filename.stem+'_'+str(epoch)+filename.suffix
+    epoch_filename = filename.parent / (filename.stem+'_'+str(epoch)+filename.suffix)
     with open(epoch_filename, 'a') as f:
         f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}\n')
 
 def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_values):
-    epoch_filename = filename.stem+'_'+str(epoch)+filename.suffix
+    epoch_filename = filename.parent / (filename.stem+'_'+str(epoch)+filename.suffix)
     with open(epoch_filename, 'a') as f:
         for qid, doc_ids, values in zip(qids, batched_doc_ids, batched_values):
             for doc_id, value in zip(doc_ids, values):
