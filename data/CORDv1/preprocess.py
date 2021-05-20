@@ -11,14 +11,6 @@ from argparse import ArgumentParser
 from collections import defaultdict
 
 
-# Every heading that contains "background" or "literaure" from within
-# the top-2000 section headings (by # of paragraphs, not unique papers).
-BackgroundHeadings = {'background', 'related work', 'literature review', 'related works', 'background:',
-                      'theoretical background', 'literature search', 'ii. related work', 'related literature',
-                      'background and related work', 'literature survey', 'historical background', '| background',
-                      'literature', 'background and rationale {6a}', 'research background', 'review of literature',
-                      'background information', 'comparison with existing literature', 'abstract background',
-                      'background & summary', 'background and rationale'}
 
 
 def main(args):
