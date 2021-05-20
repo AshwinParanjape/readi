@@ -41,7 +41,7 @@ def main(args):
             for p in paper['passages']:
                 line = [p['heading'], p['text'], date, abstract]
                 line = ' | '.join(line)
-                line = ' '.join(line.split())
+                line = ' '.join(line.strip().split())
                 line = [PID, line, title, cid]
                 line = '\t'.join(map(str, line))
                 f.write(line + '\n')
@@ -56,27 +56,29 @@ def main(args):
 
         with open(input_path) as f:
             with open(output_path, 'w') as g:
-                print_message(f"#> Writing to {f.name}...")
+                print_message(f"#> Writing to {g.name}...")
                 for line in f:
                     example = ujson.loads(line)
                     line = [example['title'], example['abstract'], example['date']]
-                    line = ' | '.join(line) + '\n'
+                    line = ' | '.join(line)
+                    line = ' '.join(line.strip().split())
 
                     for passage in example['background']:  # Repeat source for each target
-                        g.write(line)
+                        g.write(line + '\n')
 
         output_path = os.path.join(args.output, f'{split}.target')
         assert not os.path.exists(output_path), output_path
 
         with open(input_path) as f:
             with open(output_path, 'w') as g:
-                print_message(f"#> Writing to {f.name}...")
+                print_message(f"#> Writing to {g.name}...")
                 for line in f:
                     example = ujson.loads(line)
 
                     for passage in example['background']:
-                        passage = passage['text'] + '\n'
-                        g.write(passage)
+                        passage = passage['text']
+                        passage = ' '.join(passage.strip().split())
+                        g.write(passage + '\n')
 
     print("#> Done.")
 
