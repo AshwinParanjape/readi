@@ -36,7 +36,7 @@ def main(args):
         PID = 1
         for cid, paper in papers.items():
             meta = metadata[cid][0]
-            title, abstract, date = meta['title'], meta['publish_time'], meta['abstract']
+            title, abstract, date = meta['title'], meta['abstract'], meta['publish_time']
 
             for p in paper['passages']:
                 line = [p['heading'], date, p['text'], abstract]
