@@ -13,13 +13,20 @@ from data.CORDv1.utils import BackgroundHeadings, DEV_SIZE, TEST_SIZE, print_mes
 
 class ExampleBuilder:
     def __init__(self, path):
-        self.papers = self.load_corpus(os.path.join(path, 'paper.json'))
+        self.papers = self.load_papers(os.path.join(path, 'paper.json'))
 
     def run(self):
         self.examples = self.create_examples()
         self.train, self.dev, self.test = self.create_splits()
 
         return self.train, self.dev, self.test
+    
+    def load_papers(self, path):
+        with open(path) as f:
+            print_message(f"#> Load {f.name}..")
+            papers = ujson.load(f)
+
+        return papers
 
     def create_examples(self):
         papers = self.papers
@@ -75,7 +82,7 @@ class ExampleBuilder:
 def main(args):
     print_message("#> Starting..")
 
-    builder = ExampleBuilder(args.fulltext)
+    builder = ExampleBuilder(args.corpus)
     splits = builder.run()
 
     names = ['train', 'dev', 'test']
