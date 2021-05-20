@@ -2,6 +2,13 @@ import pickle
 
 from argparse import ArgumentParser
 from collections import defaultdict
+import torch
+import io
+class CPU_Unpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        else: return super().find_class(module, name)
 
 def main(args):
     Provs = {}
@@ -29,14 +36,14 @@ def main(args):
                     qid, pid = map(int, [qid, pid])
 
                     Ranking[qid].append(pid)
-            
+
             for qid in Ranking:
                 Ranking[qid] = {'qid': qid, 'retrievals': [{'doc_id': pid} for pid in Ranking[qid]]}
-                
+
         else:
             with open(path, 'rb') as f:
                 print(f"Loading {f.name}...")
-                Ranking = pickle.load(f)
+                Ranking = CPU_Unpickler(f).load()
 
         assert len(Ranking) == len(Provs), (len(Ranking), len(Provs))
 

@@ -543,7 +543,7 @@ class PDataset(torch.utils.data.IterableDataset):
 
 
 class PQDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False):
+    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False, include_unrelated=True):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
@@ -563,6 +563,7 @@ class PQDataset(torch.utils.data.IterableDataset):
         self.n_workers = n_workers
         self.skipped_instances = 0
         self.yield_scores = yield_scores
+        self.include_unrelated = include_unrelated
 
     def __iter__(self):
         # Important: doc_scores are the Q retriever scores
@@ -575,6 +576,7 @@ class PQDataset(torch.utils.data.IterableDataset):
                 if sampled_retrievals is None:
                     self.skipped_instances+=1
                     continue
+                sampled_retrievals['score_q'] = sampled_retrievals['score_q'].fillna(merged_retrievals['score_q'].min())
                 yield_dict = {'qid': qid,
                         'source': source,
                         'target': target,
@@ -586,12 +588,13 @@ class PQDataset(torch.utils.data.IterableDataset):
                     yield_dict['doc_scores'] = torch.tensor(sampled_retrievals['score_q'].tolist())
 
                 yield yield_dict
-                if self.unrelated_retrievals is not None:
-                    self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
-                    if len(self.unrelated_retrievals)>2000:
-                        self.unrelated_retrievals.sample(2000)
-                else:
-                    self.unrelated_retrievals = merged_retrievals.sample(n=2)
+                if self.include_unrelated:
+                    if self.unrelated_retrievals is not None:
+                        self.unrelated_retrievals = pd.concat([self.unrelated_retrievals, merged_retrievals.sample(n=10)])
+                        if len(self.unrelated_retrievals)>2000:
+                            self.unrelated_retrievals.sample(2000)
+                    else:
+                        self.unrelated_retrievals = merged_retrievals.sample(n=2)
 
     #def __len__(self):
     #    return (len(self.source)//self.n_workers)-self.skipped_instances
@@ -806,11 +809,13 @@ class ELBOFn(torch.nn.Module):
 
 
 def log_value(filename, stage, epoch, batch_idx, key, value):
-    with open(filename, 'a') as f:
+    epoch_filename = filename.stem+'_'+str(epoch)+filename.suffix
+    with open(epoch_filename, 'a') as f:
         f.write(f'{stage}\t{epoch}\t{batch_idx}\t{key}\t{value}\n')
 
 def log_batch_value(filename, stage, epoch, qids, batched_doc_ids, batched_values):
-    with open(filename, 'a') as f:
+    epoch_filename = filename.stem+'_'+str(epoch)+filename.suffix
+    with open(epoch_filename, 'a') as f:
         for qid, doc_ids, values in zip(qids, batched_doc_ids, batched_values):
             for doc_id, value in zip(doc_ids, values):
                 f.write(f'{stage}\t{epoch}\t{qid}\t{doc_id}\t{value}\n')
@@ -826,7 +831,7 @@ class InheritableCheckpointMixin():
     @classmethod
     def init_from_checkpoints(cls, state_dict, **init_kwargs):
         obj = cls(**init_kwargs)
-        obj.load_state_dict(state_dict)
+        obj.load_state_dict(state_dict, strict=False)
         obj.set_loss_fn()
         return obj
 
@@ -841,8 +846,6 @@ class NLLLossSystem(pl.LightningModule):
         self.loss_fn = LM_NLL(self.generator)
         self.expdir=expdir
         self.lr = lr
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
-            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
@@ -865,7 +868,14 @@ class NLLLossSystem(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
-class MarginalizedLossSystem(pl.LightningModule):
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
+
+    def setup_tsv_files(self):
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
+class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
@@ -884,12 +894,6 @@ class MarginalizedLossSystem(pl.LightningModule):
 
         self.expdir = expdir
         self.lr = lr
-        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
-            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
-        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
-            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
-            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     @staticmethod
     def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint):
@@ -934,6 +938,17 @@ class MarginalizedLossSystem(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
+
+    def setup_tsv_files(self):
+        with open(Path(self.expdir) / Path(f'p_scores_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
+        with open(Path(self.expdir) / Path(f'nll_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None):
         super().__init__()
@@ -960,8 +975,10 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
-        self.setup_tsv_files()
 
+
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
 
     @staticmethod
     def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint):
@@ -998,13 +1015,13 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
 
 
     def setup_tsv_files(self):
-        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'p_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
-        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'q_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
-        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'nll_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
@@ -1047,6 +1064,8 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.lr = lr
         self.expdir = expdir
+
+    def on_train_epoch_start(self):
         self.setup_tsv_files()
 
     def set_loss_fn(self):
@@ -1076,15 +1095,15 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
 
         for fname, values in [('q_scores.tsv', output.q_scores),
                               ('nll.tsv', output.lm_nll)]:
-            log_batch_value(Path(self.expdir) / fname, 'val', self.current_epoch, batch['qid'], batch['doc_ids'],
+            log_batch_value(Path(self.expdir) / fname, loop, self.current_epoch, batch['qid'], batch['doc_ids'],
                             values)
 
     def setup_tsv_files(self):
-        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'q_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
-        with open(Path(self.expdir) / Path('nll.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'nll_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
@@ -1129,10 +1148,10 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
-        self.setup_tsv_files()
 
     def set_loss_fn(self):
         self.loss_fn = self.loss_fn_constructor(self.p_scorer)
+
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint):
@@ -1157,15 +1176,17 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
 
         for fname, values in [('p_scores.tsv', output.p_scores),
                               ('q_scores.tsv', output.q_scores)]:
-            log_batch_value(Path(self.expdir) / fname, 'val', self.current_epoch, batch['qid'], batch['doc_ids'],
+            log_batch_value(Path(self.expdir) / fname, loop, self.current_epoch, batch['qid'], batch['doc_ids'],
                             values)
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
 
     def setup_tsv_files(self):
-        with open(Path(self.expdir) / Path('p_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'p_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
-        with open(Path(self.expdir) / Path('q_scores.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'q_scores_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tq_score\n')
-        with open(Path(self.expdir) / Path('metrics.tsv'), 'w') as f:
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
@@ -1231,6 +1252,7 @@ if __name__ == '__main__':
                                      help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}, PosteriorDocumentSampler(Reconstruction)')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
+    training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
 
 
     Experiment.add_argument_group(parser)
@@ -1256,7 +1278,7 @@ if __name__ == '__main__':
         print("Overriding the model using the checkpoint")
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches)
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
         trainer.max_epochs = trainer.current_epoch+args.max_epochs
 
         #if args.loss_type == 'NLL':
@@ -1282,7 +1304,7 @@ if __name__ == '__main__':
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches)
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
 
     # Create models
     if args.loss_type == 'NLL':
@@ -1293,18 +1315,18 @@ if __name__ == '__main__':
     elif args.loss_type == 'Marginalized':
         # Still old style loading from checkpoints
         #TODO, test if the following are identical
-        model = MarginalizedLossSystem(args.p_scorer_checkpoint, args.query_maxlen, args.doc_maxlen,
+        model = MarginalizedLossSystem(args.query_maxlen, args.doc_maxlen,
                                        expdir=curexpdir, lr=args.lr,
                                        truncate_query_from_start=args.truncate_query_from_start)
         if args.scorer_checkpoint_type == 'colbert':
-            state_dict = NLLLossSystem.extract_state_dict_from_colbert_checkpoints(
+            state_dict = MarginalizedLossSystem.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint)
         elif args.scorer_checkpoint_type == 'qtraining':
-            state_dict = NLLLossSystem.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
+            state_dict = MarginalizedLossSystem.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
                                                                            generator_checkpoint=args.generator_checkpoint)
         else:
             assert False
-        model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen,
+        model = MarginalizedLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen,
                                                      doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
                                                      truncate_query_from_start=args.truncate_query_from_start)
     elif args.loss_type == 'ELBO':
@@ -1314,7 +1336,7 @@ if __name__ == '__main__':
             state_dict = ELBOLossSystem.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint, q_scorer_checkpoint=args.q_scorer_checkpoint)
         elif args.scorer_checkpoint_type == 'qtraining':
-            state_dict = NLLLossSystem.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
+            state_dict = ELBOLossSystem.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
                                                                            q_scorer_checkpoint=args.q_scorer_checkpoint,
                                                                            generator_checkpoint=args.generator_checkpoint)
         else:
@@ -1338,7 +1360,8 @@ if __name__ == '__main__':
                 p_scorer_checkpoint=args.p_scorer_checkpoint)
         else:
             assert False
-        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr,
+        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, query_maxlen=args.query_maxlen,
+                                                     doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
                                                         truncate_query_from_start=args.truncate_query_from_start)
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
@@ -1362,13 +1385,32 @@ if __name__ == '__main__':
         doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                  yield_scores=secondary_training, include_unrelated=False)
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+        val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
+                                args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
+                                yield_scores = secondary_training, include_unrelated=False)
+        val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+    elif args.loss_type in {'KLD'}:
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler'}
+        if args.doc_sampler == 'GuidedDocumentSampler':
+            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
+        elif args.doc_sampler == 'RankPNDocumentSampler':
+            doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
+        elif args.doc_sampler == 'PosteriorDocumentSampler':
+            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+        else:
+            assert False
+        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                  args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
                                   yield_scores=secondary_training)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
                                 args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
                                 yield_scores = secondary_training)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-    elif args.loss_type in {'ELBO',  'KLD', 'PosNeg'} :
+
+    elif args.loss_type in {'ELBO',  'PosNeg'} :
         assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )

@@ -2,6 +2,7 @@ import argparse
 import os
 import pickle as pkl
 from pathlib import Path
+from typing import Dict
 
 import torch
 from pytorch_lightning import Trainer
@@ -9,9 +10,10 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
 from meticulous import Experiment
+from torch.utils.data.dataloader import default_collate
 from transformers import BartForConditionalGeneration, BartTokenizer
 
-from models.qrag import SimpleDocumentSampler, PDataset, collate_fn, MarginalizedLossSystem, Generator, ColBERTScorer, \
+from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem, Generator, ColBERTScorer, \
     NLLLossSystem, TopKDocumentSampler
 
 class RetrievalScorer(pl.LightningModule):
@@ -127,6 +129,16 @@ class TargetGenerator(pl.LightningModule):
                 self.instances.append(instance)
         return generated_output
 
+def collate_fn(batch: Dict):
+    # Differs from the qrag.collate function in that the doc_scores aren't concatenated as tensors
+
+    collated = default_collate(
+        [{k:v for k, v in d.items() if k in {'qid', 'source', 'target'}} for d in batch]
+    )
+    collated['doc_ids'] = [d['doc_ids'] for d in batch ]
+    collated['doc_texts'] = [d['doc_texts'] for d in batch ]
+    collated['doc_scores'] = [d['doc_scores'].tolist() for d in batch ]
+    return collated
 
 def generate():
     parser = argparse.ArgumentParser(description='Script to rescore documents and generate samples')
@@ -193,7 +205,7 @@ def generate():
     baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
     if args.n_samples_per_doc == 0:
         model = RetrievalScorer.load_from_checkpoint(args.checkpoint, strict=False,
-                                                     expdir = curexpdir)
+                                                     expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start)
     else:
         model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False, expdir=curexpdir,
                                                  query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
