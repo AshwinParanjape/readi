@@ -59,9 +59,9 @@ class ExampleBuilder:
 
         example = {}
         example['cid'] = cid
-        example['title'] = raw['title']
-        example['date'] = raw['publish_time']
-        example['abstract'] = raw['abstract']
+        example['title'] = raw['metadata']['title']
+        example['date'] = raw['metadata']['publish_time']
+        example['abstract'] = raw['metadata']['abstract']
         example['background'] = background
 
         return example
