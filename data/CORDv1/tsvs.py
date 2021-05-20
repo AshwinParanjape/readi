@@ -30,7 +30,7 @@ def main(args):
         print_message(f"#> Writing to {f.name}...")
 
         line = ['id', 'text', 'title', 'cid']
-        line = '\t'.join(line)
+        line = '\t'.join(map(str, line))
         f.write(line + '\n')
 
         PID = 1
@@ -43,7 +43,7 @@ def main(args):
                 line = ' | '.join(line)
                 line = ' '.join(line.split())
                 line = [PID, line, title, cid]
-                line = '\t'.join(line)
+                line = '\t'.join(map(str, line))
                 f.write(line + '\n')
 
                 PID += 1
