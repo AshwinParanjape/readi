@@ -46,7 +46,8 @@ class CorpusBuilder:
                     anthology_bibs[key].append(bib)
 
         # Drop rare citations
-        for key in anthology:
+        anthology_keys = list(anthology.keys())
+        for key in anthology_keys:
             if len(set(anthology[key])) < MIN_CITATIONS:
                 del anthology[key]
                 del anthology_bibs[key]
