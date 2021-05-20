@@ -3,8 +3,8 @@ import datetime
 
 
 MIN_CITATIONS = 5
-DEV_SIZE = 1000
-TEST_SIZE = 1000
+DEV_SIZE = 1200
+TEST_SIZE = 1200
 
 
 # Every heading that contains "background" or "literaure" from within
