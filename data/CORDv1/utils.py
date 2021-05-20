@@ -1,3 +1,4 @@
+import ujson
 import datetime
 
 
@@ -61,8 +62,10 @@ def bib_to_citation(bib):
 
 
 def list_of_unique_dicts(dicts):
-    """
-    Source: https://stackoverflow.com/a/38521207/1493011
-    """
+    unique_dicts = {}
 
-    return [dict(s) for s in set(frozenset(d.items()) for d in dicts)]
+    for d in dicts:
+        key = ujson.dumps(d)
+        unique_dicts[key] = d
+
+    return list(unique_dicts.values())
