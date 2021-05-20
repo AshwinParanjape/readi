@@ -5,8 +5,10 @@
 #
 
 import os
-import pathlib
+import tqdm
 import ujson
+import pathlib
+
 
 from argparse import ArgumentParser
 from data.CORDv1.utils import BackgroundHeadings, DEV_SIZE, TEST_SIZE, print_message
@@ -15,14 +17,15 @@ from data.CORDv1.utils import BackgroundHeadings, DEV_SIZE, TEST_SIZE, print_mes
 class ExampleBuilder:
     def __init__(self, path):
         self.papers = self.load_json(os.path.join(path, 'papers.json'))
-        self.metadata = self.load_json(os.path.join(pathlib.Path(path).parent, 'metadata.json'))
+        self.metadata = self.load_json(os.path.join(
+            pathlib.Path(path).parent, 'metadata.json'))
 
     def run(self):
         self.examples = self.create_examples()
         self.train, self.dev, self.test = self.create_splits()
 
         return self.train, self.dev, self.test
-    
+
     def load_json(self, path):
         with open(path) as f:
             print_message(f"#> Load {f.name}..")
@@ -31,10 +34,12 @@ class ExampleBuilder:
         return obj
 
     def create_examples(self):
+        print_message("#> Create examples..")
+
         papers = self.papers
         examples = []
 
-        for cid, paper in papers.items():
+        for cid, paper in tqdm.tqdm(papers.items()):
             example = self.create_example(cid, paper)
 
             if example:
