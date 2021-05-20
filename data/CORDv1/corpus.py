@@ -60,7 +60,6 @@ class CorpusBuilder:
     def normalize_citations(self, fulltext):
         print_message("#> Normalize all citations in the text..")
 
-        anthology = self.anthology
         papers = {}
 
         for cid, paper in tqdm.tqdm(fulltext.items()):
@@ -73,14 +72,14 @@ class CorpusBuilder:
                 sections[heading].append(p)
 
             for heading, section in sections.items():
-                section_psgs = self.fix_citations_in_section(section, bibs)
+                section_psgs = self.fix_citations_in_section(heading, section, bibs)
                 passages.extend(section_psgs)
 
             papers[cid] = {'raw': paper, 'passages': passages}
 
         return papers
 
-    def fix_citations_in_section(self, section, bibs):
+    def fix_citations_in_section(self, heading, section, bibs):
         anthology = self.anthology
         passages = []
 
@@ -111,7 +110,7 @@ class CorpusBuilder:
             new_text = ' '.join(new_text)
 
             psg = {}
-            psg['heading'] = section
+            psg['heading'] = heading
             psg['text'] = new_text
             psg['raw'] = p
             psg['citations'] = p_citations
