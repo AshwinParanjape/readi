@@ -26,6 +26,13 @@ def print_message(*s, condition=True):
     return msg
 
 
+def normalize_title(title):
+    title = title.replace('{', '').replace('}', '').lower()
+    title = ' '.join(title.split()[:16])
+
+    return title
+
+
 def bib_to_key(bib):
     """
     Each different (lowercase title, first author's last name) pair identifies a unique reference paper.
@@ -38,13 +45,15 @@ def bib_to_key(bib):
         first_author = None
 
     if len(title):
-        return (title.lower(), first_author)  # len(authors), year
+        title_ = normalize_title(title)
+        return (title_, first_author)  # len(authors), year
 
     return None
 
 
 def bib_to_citation(bib):
     title, authors, year = bib['title'], bib['authors'], bib['year']
+    title = normalize_title(title)
 
     if len(authors) == 0:
         citation = None
@@ -55,7 +64,7 @@ def bib_to_citation(bib):
 
     if citation:
         citation += f", {bib['year'] or 'n.d.'}, "
-        citation += ' '.join(bib['title'].split()[:12])
+        citation += title
         return f"{{{citation}}}"
 
     return None
