@@ -4,13 +4,13 @@
 #
 
 import os
-import csv
 import ujson
-import random
+import tqdm
 
 from argparse import ArgumentParser
 from collections import defaultdict
-from data.CORDv1.utils import MIN_CITATIONS, bib_to_key, bib_to_citation, list_of_unique_dicts
+
+from data.CORDv1.utils import MIN_CITATIONS, bib_to_key, bib_to_citation, list_of_unique_dicts, print_message
 
 
 class CorpusBuilder:
@@ -19,22 +19,25 @@ class CorpusBuilder:
 
     def run(self):
         fulltext = self.fulltext
-        anthology = self.count_citations(fulltext)
-        papers = self.fix_citations(fulltext, anthology)
+        anthology = self.build_anthology(fulltext)
+        papers = self.normalize_citations(fulltext, anthology)
 
         return anthology, papers
 
     def load_fulltext(self, path):
         with open(path) as f:
+            print_message(f"#> Load {f.name}..")
             fulltext = ujson.load(f)
 
         return fulltext
 
-    def count_citations(self, fulltext):
+    def build_anthology(self, fulltext):
+        print_message("#> Build anthology..")
+
         anthology = defaultdict(list)
         anthology_bibs = defaultdict(list)
 
-        for cid, paper in fulltext.items():
+        for cid, paper in tqdm.tqdm(fulltext.items()):
             for _, bib in paper['bib_entries'].items():
                 key = bib_to_key(bib)
 
@@ -53,10 +56,12 @@ class CorpusBuilder:
 
         return anthology
 
-    def fix_citations(self, fulltext, anthology):
+    def normalize_citations(self, fulltext, anthology):
+        print_message("#> Normalize all citations in the text..")
+
         papers = {}
 
-        for cid, paper in fulltext.items():
+        for cid, paper in tqdm.tqdm(fulltext.items()):
             sections = defaultdict(list)
             bibs = paper['bib_entries']
             passages = []
@@ -66,9 +71,9 @@ class CorpusBuilder:
                 sections[heading].append(p)
 
             for heading, section in sections:
-                section_passages = self.fix_citations_in_section(
+                section_psgs = self.fix_citations_in_section(
                     section, bibs, anthology)
-                passages.extend(section_passages)
+                passages.extend(section_psgs)
 
             papers[cid] = {'raw': paper, 'passages': passages}
 
@@ -115,17 +120,19 @@ class CorpusBuilder:
 
 
 def main(args):
+    print_message("#> Starting..")
+
     builder = CorpusBuilder(args.fulltext)
     anthology, papers = builder.run()
 
     os.makedirs(args.output)
 
     with open(os.path.join(args.output, 'anthology.json'), 'w') as f:
-        print(f"#> Writing to {f.name}...")
+        print_message(f"#> Writing to {f.name}...")
         ujson.dump(anthology, f)
 
     with open(os.path.join(args.output, 'papers.json'), 'w') as f:
-        print(f"#> Writing to {f.name}...")
+        print_message(f"#> Writing to {f.name}...")
         ujson.dump(papers, f)
 
     print("#> Done.")

@@ -1,3 +1,6 @@
+import datetime
+
+
 MIN_CITATIONS = 5
 
 
@@ -9,6 +12,17 @@ BackgroundHeadings = {'background', 'related work', 'literature review', 'relate
                       'literature', 'background and rationale {6a}', 'research background', 'review of literature',
                       'background information', 'comparison with existing literature', 'abstract background',
                       'background & summary', 'background and rationale'}
+
+
+def print_message(*s, condition=True):
+    s = ' '.join([str(x) for x in s])
+    msg = "[{}] {}".format(
+        datetime.datetime.now().strftime("%b %d, %H:%M:%S"), s)
+
+    if condition:
+        print(msg, flush=True)
+
+    return msg
 
 
 def bib_to_key(bib):
