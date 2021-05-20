@@ -19,10 +19,10 @@ class CorpusBuilder:
 
     def run(self):
         fulltext = self.fulltext
-        anthology = self.build_anthology(fulltext)
-        papers = self.normalize_citations(fulltext, anthology)
+        self.anthology = self.build_anthology(fulltext)
+        self.papers = self.normalize_citations(fulltext)
 
-        return anthology, papers
+        return self.anthology, self.papers
 
     def load_fulltext(self, path):
         with open(path) as f:
@@ -57,9 +57,10 @@ class CorpusBuilder:
 
         return anthology
 
-    def normalize_citations(self, fulltext, anthology):
+    def normalize_citations(self, fulltext):
         print_message("#> Normalize all citations in the text..")
 
+        anthology = self.anthology
         papers = {}
 
         for cid, paper in tqdm.tqdm(fulltext.items()):
@@ -71,7 +72,7 @@ class CorpusBuilder:
                 heading = p['section'].lower()
                 sections[heading].append(p)
 
-            for heading, section in sections:
+            for heading, section in sections.items():
                 section_psgs = self.fix_citations_in_section(
                     section, bibs, anthology)
                 passages.extend(section_psgs)
@@ -80,7 +81,8 @@ class CorpusBuilder:
 
         return papers
 
-    def fix_citations_in_section(self, section, bibs, anthology):
+    def fix_citations_in_section(self, section, bibs):
+        anthology = self.anthology
         passages = []
 
         for p in section:
