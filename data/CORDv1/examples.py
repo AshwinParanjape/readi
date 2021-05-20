@@ -48,7 +48,7 @@ class ExampleBuilder:
         return examples
 
     def create_example(self, cid,  paper):
-        meta = self.metadata[cid]
+        meta = self.metadata[cid][0]
         passages = paper['passages']
         background = []
 
