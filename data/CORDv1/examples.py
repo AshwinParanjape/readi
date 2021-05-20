@@ -13,7 +13,8 @@ from data.CORDv1.utils import BackgroundHeadings, DEV_SIZE, TEST_SIZE, print_mes
 
 class ExampleBuilder:
     def __init__(self, path):
-        self.papers = self.load_papers(os.path.join(path, 'papers.json'))
+        self.papers = self.load_json(os.path.join(path, 'papers.json'))
+        self.metadata = self.load_json(os.path.join(os.path.dirname(path), 'metadata.json'))
 
     def run(self):
         self.examples = self.create_examples()
@@ -21,12 +22,12 @@ class ExampleBuilder:
 
         return self.train, self.dev, self.test
     
-    def load_papers(self, path):
+    def load_json(self, path):
         with open(path) as f:
             print_message(f"#> Load {f.name}..")
-            papers = ujson.load(f)
+            obj = ujson.load(f)
 
-        return papers
+        return obj
 
     def create_examples(self):
         papers = self.papers
@@ -41,7 +42,7 @@ class ExampleBuilder:
         return examples
 
     def create_example(self, cid,  paper):
-        raw = paper['raw']
+        meta = self.metadata[cid]
         passages = paper['passages']
         background = []
 
@@ -59,9 +60,9 @@ class ExampleBuilder:
 
         example = {}
         example['cid'] = cid
-        example['title'] = raw['metadata']['title']
-        example['date'] = raw['metadata']['publish_time']
-        example['abstract'] = raw['metadata']['abstract']
+        example['title'] = meta['title']
+        example['date'] = meta['publish_time']
+        example['abstract'] = meta['abstract']
         example['background'] = background
 
         return example
