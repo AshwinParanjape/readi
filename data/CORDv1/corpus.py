@@ -73,8 +73,7 @@ class CorpusBuilder:
                 sections[heading].append(p)
 
             for heading, section in sections.items():
-                section_psgs = self.fix_citations_in_section(
-                    section, bibs, anthology)
+                section_psgs = self.fix_citations_in_section(section, bibs)
                 passages.extend(section_psgs)
 
             papers[cid] = {'raw': paper, 'passages': passages}
