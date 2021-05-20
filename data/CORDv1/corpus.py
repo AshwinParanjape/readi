@@ -105,7 +105,7 @@ class CorpusBuilder:
 
                     if citation and (key in anthology):
                         new_text.append(citation)
-                        p_citations.append((key, citation, bib))
+                        p_citations.append((key, citation, refid))
 
             new_text.append(text[offset:])
             new_text = ' '.join(new_text)
