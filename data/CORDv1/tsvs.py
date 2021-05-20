@@ -58,11 +58,11 @@ def main(args):
             with open(output_path, 'w') as g:
                 print_message(f"#> Writing to {f.name}...")
                 for line in f:
-                    line = ujson.loads(line)
-                    line = [line['title'], line['abstract'], line['date']]
+                    example = ujson.loads(line)
+                    line = [example['title'], example['abstract'], example['date']]
                     line = ' | '.join(line) + '\n'
 
-                    for passage in line['background']:  # Repeat source for each target
+                    for passage in example['background']:  # Repeat source for each target
                         g.write(line)
 
         output_path = os.path.join(args.output, f'{split}.target')
@@ -72,9 +72,9 @@ def main(args):
             with open(output_path, 'w') as g:
                 print_message(f"#> Writing to {f.name}...")
                 for line in f:
-                    line = ujson.loads(line)
+                    example = ujson.loads(line)
 
-                    for passage in line['background']:
+                    for passage in example['background']:
                         passage = passage['text'] + '\n'
                         g.write(passage)
 
