@@ -13,7 +13,7 @@ from data.CORDv1.utils import BackgroundHeadings, DEV_SIZE, TEST_SIZE, print_mes
 
 class ExampleBuilder:
     def __init__(self, path):
-        self.papers = self.load_papers(os.path.join(path, 'paper.json'))
+        self.papers = self.load_papers(os.path.join(path, 'papers.json'))
 
     def run(self):
         self.examples = self.create_examples()
