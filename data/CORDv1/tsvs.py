@@ -39,7 +39,7 @@ def main(args):
             title, abstract, date = meta['title'], meta['publish_time'], meta['abstract']
 
             for p in paper['passages']:
-                line = [p['heading'], p['text'], date, abstract]
+                line = [p['heading'], date, p['text'], abstract]
                 line = ' | '.join(line)
                 line = ' '.join(line.strip().split())
                 line = [PID, line, title, cid]
@@ -59,7 +59,7 @@ def main(args):
                 print_message(f"#> Writing to {g.name}...")
                 for line in f:
                     example = ujson.loads(line)
-                    line = [example['title'], example['abstract'], example['date']]
+                    line = [example['title'], example['date'], example['abstract']]
                     line = ' | '.join(line)
                     line = ' '.join(line.strip().split())
 
