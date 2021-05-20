@@ -5,6 +5,7 @@
 #
 
 import os
+import pathlib
 import ujson
 
 from argparse import ArgumentParser
@@ -14,7 +15,7 @@ from data.CORDv1.utils import BackgroundHeadings, DEV_SIZE, TEST_SIZE, print_mes
 class ExampleBuilder:
     def __init__(self, path):
         self.papers = self.load_json(os.path.join(path, 'papers.json'))
-        self.metadata = self.load_json(os.path.join(os.path.dirname(path), 'metadata.json'))
+        self.metadata = self.load_json(os.path.join(pathlib.Path(path).parent, 'metadata.json'))
 
     def run(self):
         self.examples = self.create_examples()
