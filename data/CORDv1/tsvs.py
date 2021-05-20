@@ -61,7 +61,9 @@ def main(args):
                     line = ujson.loads(line)
                     line = [line['title'], line['abstract'], line['date']]
                     line = ' | '.join(line) + '\n'
-                    g.write(line)
+
+                    for passage in line['background']:  # Repeat source for each target
+                        g.write(line)
 
         output_path = os.path.join(args.output, f'{split}.target')
         assert not os.path.exists(output_path), output_path
