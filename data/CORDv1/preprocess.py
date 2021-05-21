@@ -11,16 +11,6 @@ from argparse import ArgumentParser
 from collections import defaultdict
 
 
-# Every heading that contains "background" or "literaure" from within
-# the top-2000 section headings (by # of paragraphs, not unique papers).
-BackgroundHeadings = {'background', 'related work', 'literature review', 'related works', 'background:',
-                      'theoretical background', 'literature search', 'ii. related work', 'related literature',
-                      'background and related work', 'literature survey', 'historical background', '| background',
-                      'literature', 'background and rationale {6a}', 'research background', 'review of literature',
-                      'background information', 'comparison with existing literature', 'abstract background',
-                      'background & summary', 'background and rationale'}
-
-
 def main(args):
     metadata = defaultdict(list)  # available for all papers
     fulltext = {}  # only for full-text papers
@@ -42,13 +32,15 @@ def main(args):
             if parse_path is None:
                 continue
 
-            parse_path = parse_path.split(';')[0]  # if there's multiple, we'll take the first one
+            # if there's multiple, we'll take the first one
+            parse_path = parse_path.split(';')[0]
 
             with open(os.path.join(args.data, parse_path)) as g:
                 paper = ujson.load(g)
                 body = paper['body_text']
 
-                paper['has_bg'] = any(p['section'].lower() in BackgroundHeadings for p in body)
+                paper['has_bg'] = any(
+                    p['section'].lower() in BackgroundHeadings for p in body)
 
                 fulltext[cid] = paper
 
@@ -68,7 +60,7 @@ def main(args):
     with open(os.path.join(args.output, 'fulltext.json'), 'w') as f:
         print(f"#> Writing to {f.name}...")
         ujson.dump(fulltext, f)
-    
+
     print("#> Done.")
 
 
