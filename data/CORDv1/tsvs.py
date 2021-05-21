@@ -79,6 +79,21 @@ def main(args):
                         passage = passage['text']
                         passage = ' '.join(passage.strip().split())
                         g.write(passage + '\n')
+        
+        output_path = os.path.join(args.output, f'{split}.meta')
+        assert not os.path.exists(output_path), output_path
+
+        with open(input_path) as f:
+            with open(output_path, 'w') as g:
+                print_message(f"#> Writing to {g.name}...")
+                for line in f:
+                    example = ujson.loads(line)
+                    cid = example['cid']
+                    meta = metadata[cid][0]
+
+                    for passage in example['background']:
+                        line = ujson.dumps(meta)
+                        g.write(line + '\n')
 
     print("#> Done.")
 
