@@ -1315,9 +1315,6 @@ if __name__ == '__main__':
     elif args.loss_type == 'Marginalized':
         # Still old style loading from checkpoints
         #TODO, test if the following are identical
-        model = MarginalizedLossSystem(args.query_maxlen, args.doc_maxlen,
-                                       expdir=curexpdir, lr=args.lr,
-                                       truncate_query_from_start=args.truncate_query_from_start)
         if args.scorer_checkpoint_type == 'colbert':
             state_dict = MarginalizedLossSystem.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint)
@@ -1331,7 +1328,6 @@ if __name__ == '__main__':
                                                      truncate_query_from_start=args.truncate_query_from_start)
     elif args.loss_type == 'ELBO':
         #TODO, test if the following are identical
-        model = ELBOLossSystem(args.query_maxlen, args.doc_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start, p_scorer_checkpoint=args.p_scorer_checkpoint, q_scorer_checkpoint=args.q_scorer_checkpoint, )
         if args.scorer_checkpoint_type == 'colbert':
             state_dict = ELBOLossSystem.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint, q_scorer_checkpoint=args.q_scorer_checkpoint)
