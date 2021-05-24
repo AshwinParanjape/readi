@@ -1348,8 +1348,11 @@ if __name__ == '__main__':
                                                      expdir=curexpdir, lr=args.lr,
                                                      truncate_query_from_start=args.truncate_query_from_start)
     elif args.loss_type == 'Reconstruction':
-        state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
-        model = OnlyGeneratorTraining.init_from_checkpoints(state_dict,  expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
+        if args.generator_checkpoint:
+            state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
+            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict,  expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
+        else:
+            model = OnlyGeneratorTraining(expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
     elif args.loss_type == 'KLD' or args.loss_type=='PosNeg':
         if args.loss_type == 'KLD':
             loss_fn = KLDivergenceFn
