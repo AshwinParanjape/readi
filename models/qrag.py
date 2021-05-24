@@ -1154,6 +1154,12 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
 
 
     @staticmethod
+    def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        state_dict = {'p_scorer.'+k: v for k, v in p_scorer_checkpoint.items()}
+        return state_dict
+
+    @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint):
         p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
         state_dict = filter_state_dict(p_scorer_checkpoint, 'p_scorer')
@@ -1355,7 +1361,8 @@ if __name__ == '__main__':
             state_dict = OnlyRetrieverTraining.extract_state_dict_from_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint)
         else:
-            assert False
+            state_dict = OnlyRetrieverTraining.extract_state_dict_from_colbert_checkpoints(
+                p_scorer_checkpoint=args.p_scorer_checkpoint)
         model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, query_maxlen=args.query_maxlen,
                                                      doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
                                                         truncate_query_from_start=args.truncate_query_from_start)
