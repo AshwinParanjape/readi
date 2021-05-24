@@ -14,7 +14,7 @@ from torch.utils.data.dataloader import default_collate
 from transformers import BartForConditionalGeneration, BartTokenizer
 
 from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem, Generator, ColBERTScorer, \
-    NLLLossSystem, TopKDocumentSampler
+    NLLLossSystem, TopKDocumentSampler, InheritableCheckpointMixin, filter_state_dict
 
 class RetrievalScorer(pl.LightningModule):
     def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False):
@@ -45,7 +45,7 @@ class RetrievalScorer(pl.LightningModule):
             self.instances.append(instance)
         return None
 
-class TargetGenerator(pl.LightningModule):
+class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
                  baseline_generator: Generator=None,
                  **generation_kwargs):
@@ -72,6 +72,18 @@ class TargetGenerator(pl.LightningModule):
         self.instances = []
         #with open(Path(self.expdir)/ Path('generations.tsv'), 'w') as f:
         #    f.write('q_id\tdoc_id\tp_score\tsource\tgeneration\tpassage\n')
+
+    def set_loss_fn(self):
+        pass
+
+    @staticmethod
+    def extract_state_dict_from_checkpoints(p_scorer_checkpoint, generator_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
+        state_dict = filter_state_dict(generator_checkpoint, 'generator')
+        state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
+        state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
+        return state_dict
 
     def forward(self, batch):
         sources, _, batched_docs = batch['source'], batch['target'], batch['doc_texts']
@@ -157,8 +169,8 @@ def generate():
                              help='(Optional) Path to train/val.target file, each line contains input to the generator')
     paths_group.add_argument('--p_ranked_passages', type=str, default=(rerank_exp_base_path / '33/ranking_passages.tsv').as_posix() ,
                              help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
-    paths_group.add_argument('--checkpoint', type=str, default=(qtraining_exp_base_path / '16/checkpoints/epoch=2-step=11822.ckpt').as_posix() ,
-                             help='Path to checkpoint which contains the generator and p_scorer model')
+    paths_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can only be qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
+    paths_group.add_argument('--generator_checkpoint', default=None, type=str, help='Path to generator checkpoint')
     paths_group.add_argument('--no_retrieval_checkpoint', type=str, default=(qtraining_exp_base_path / '17/checkpoints/epoch=1-step=15763.ckpt').as_posix() ,
                              help='Path to checkpoint which contains the generator and p_scorer model')
 
@@ -188,6 +200,7 @@ def generate():
                                 help="Number of source strings used at a time")
     decoding_group.add_argument('--limit_batches', type=int, default=1.0, help="Limit number of batches")
     decoding_group.add_argument('--scorer', type=str, default='p_scorer', help='Use a specific scorer (p_scorer, q_scorer)')
+    decoding_group.add_argument('--gpus', type=int, default=1, help='number of gpus')
 
     Experiment.add_argument_group(parser)
     args = parser.parse_args()
@@ -207,7 +220,9 @@ def generate():
         model = RetrievalScorer.load_from_checkpoint(args.checkpoint, strict=False,
                                                      expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start)
     else:
-        model = TargetGenerator.load_from_checkpoint(args.checkpoint, strict=False, expdir=curexpdir,
+        state_dict = TargetGenerator.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
+                                                                       generator_checkpoint=args.generator_checkpoint)
+        model = TargetGenerator.init_from_checkpoints(state_dict, expdir=curexpdir,
                                                  query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                                                  truncate_query_from_start=args.truncate_query_from_start,
                                                  n_samples_per_doc = args.n_samples_per_doc,
@@ -230,7 +245,7 @@ def generate():
                            p_scorer=val_dataset_scorer, yield_scores=True)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
-    trainer = Trainer(gpus=1, default_root_dir=curexpdir, limit_test_batches=args.limit_batches)
+    trainer = Trainer(gpus=args.gpus, default_root_dir=curexpdir, limit_test_batches=args.limit_batches)
     trainer.test(model, test_dataloaders=val_dataloader)
     with open(Path(curexpdir)/'generations.pkl', 'wb') as f:
         pkl.dump(model.instances, f)
