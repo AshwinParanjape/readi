@@ -217,7 +217,7 @@ def generate():
     #model = TargetGenerator(generator, p_scorer, expdir=curexpdir, strict=False)
     baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
     if args.n_samples_per_doc == 0:
-        model = RetrievalScorer.load_from_checkpoint(args.checkpoint, strict=False,
+        model = RetrievalScorer.load_from_checkpoint(args.p_scorer_checkpoint, strict=False,
                                                      expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start)
     else:
         state_dict = TargetGenerator.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
