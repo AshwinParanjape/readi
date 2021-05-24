@@ -1064,6 +1064,7 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.generator = Generator(self._generator, self._generator_tokenizer)
         self.lr = lr
         self.expdir = expdir
+        self.set_loss_fn()
 
     def on_train_epoch_start(self):
         self.setup_tsv_files()
