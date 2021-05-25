@@ -8,6 +8,15 @@ def main(args):
     GoldCitations_by_QID = defaultdict(list)
     Ranking_by_QID = defaultdict(list)
 
+    CollectionCitations = {}
+
+    with open(args.collection_jsonl) as f:
+        for line in f:
+            if len(line.strip()):
+                line = ujson.loads(line)
+                pid, citations = line['pid'], line['citations']
+                CollectionCitations[pid] = [cite for _, cite, _ in citations]
+
     with open(args.jsonl) as f:
         for line_idx, line in enumerate(f):
             line = ujson.loads(line)
@@ -31,12 +40,15 @@ def main(args):
                 current_qid += 1
 
     with open(args.ranking_passages) as f:
-        assert f.readline().strip() == '\t'.join(['qid', 'pid', 'rank', 'score', 'text', 'title', 'cid'])
+        # assert f.readline().strip() == '\t'.join(['qid', 'pid', 'rank', 'score', 'text', 'title', 'cid'])
 
         for line in f:
-            qid, pid, rank, score, text, title, cid = line.strip().split('\t')
-            qid = int(qid)
-            Ranking_by_QID[qid].append(text)
+            # qid, pid, rank, score, text, title, cid = line.strip().split('\t')
+            qid, pid, *_ = line.strip().split('\t')
+            qid, pid = int(qid), int(pid)
+
+            Ranking_by_QID[qid].append(pid)
+            # Ranking_by_QID[qid].append(text)
             
     assert GoldCitations_by_QID.keys() == Ranking_by_QID.keys(), (len(GoldCitations_by_QID), len(Ranking_by_QID))
 
@@ -48,17 +60,21 @@ def main(args):
             citations_seen_so_far = 0
             recalled = [False for _ in gold]
 
-            for text in ranking:
-                if text.count('{') != text.count('}'):
-                    print('\n\n\n')
-                    print(text.count('{'), text.count('}'))
-                    print(text)
-                    print('\n\n\n')
-                citations_seen_so_far += text.count('{')
+            # for text in ranking:
+            #     if text.count('{') != text.count('}'):
+            #         print('\n\n\n')
+            #         print(text.count('{'), text.count('}'))
+            #         print(text)
+            #         print('\n\n\n')
+            #     citations_seen_so_far += text.count('{')
+
+            for pid in ranking:
+                pid_citations = CollectionCitations[pid]
 
                 for idx, gold_citation in enumerate(gold):
-                    recalled[idx] = recalled[idx] or (gold_citation in text)
+                    recalled[idx] = recalled[idx] or (gold_citation in pid_citations)
 
+                citations_seen_so_far += len(pid_citations)
                 if citations_seen_so_far >= cutoff:
                     break
             
@@ -76,6 +92,7 @@ if __name__ == "__main__":
 
     # Input Arguments.
     parser.add_argument('--jsonl', dest='jsonl', required=True, type=str)
+    parser.add_argument('--ranking-passages', dest='ranking_passages', required=True)
     parser.add_argument('--ranking-passages', dest='ranking_passages', required=True)
 
     args = parser.parse_args()
