@@ -53,7 +53,7 @@ def main(args):
                 citations_seen_so_far += text.count('{')
 
                 for idx, gold_citation in enumerate(gold):
-                    recalled[idx] = recalled[idx] or (gold_citations in text)
+                    recalled[idx] = recalled[idx] or (gold_citation in text)
 
                 if citations_seen_so_far >= cutoff:
                     break
