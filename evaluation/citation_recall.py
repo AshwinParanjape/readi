@@ -36,7 +36,7 @@ def main(args):
 
         for line_idx, line in enumerate(f):
             line = ujson.loads(line)
-            gold_citations = GoldCitations_by_paperID[line_idx]
+            gold_citations = GoldCitations_by_paperID[line_idx % 3]
 
             for p in line['background']:
                 GoldCitations_by_QID[current_qid] = gold_citations
