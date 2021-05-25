@@ -9,6 +9,8 @@ def main(args):
     Ranking_by_QID = defaultdict(list)
 
     CollectionCitations = {}
+    Pid2Cid = {}
+    Qid2Cid = {}
 
     with open(args.collection_jsonl) as f:
         for line in f:
@@ -16,6 +18,7 @@ def main(args):
                 line = ujson.loads(line)
                 pid, citations = line['pid'], line['citations']
                 CollectionCitations[pid] = [cite for _, cite, _ in citations]
+                Pid2Cid[pid] = line['cid']
 
     with open(args.slice_jsonl) as f:
         for line_idx, line in enumerate(f):
@@ -37,6 +40,7 @@ def main(args):
 
             for p in line['background']:
                 GoldCitations_by_QID[current_qid] = gold_citations
+                Qid2Cid[current_qid] = line['cid']
                 current_qid += 1
 
     with open(args.ranking) as f:
@@ -70,6 +74,9 @@ def main(args):
             #     citations_seen_so_far += text.count('{')
 
             for pid in ranking:
+                if Qid2Cid[qid] == Pid2Cid[pid]:
+                    continue
+
                 pid_citations = CollectionCitations[pid]
 
                 for idx, gold_citation in enumerate(gold):
@@ -86,6 +93,8 @@ def main(args):
 
         print(f"CitationRecall@{cutoff} = {recall}")
 
+
+# FIXME: NOTE: TODO:  Taking full passage even if exceeds citation cutoff in the last passage!!!! Intentional for now.
 
 if __name__ == "__main__":
     parser = ArgumentParser(
