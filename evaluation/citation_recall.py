@@ -50,7 +50,10 @@ def main(args):
 
             for text in ranking:
                 if text.count('{') != text.count('}'):
+                    print('\n\n\n')
                     print(text.count('{'), text.count('}'))
+                    print(text)
+                    print('\n\n\n')
                 citations_seen_so_far += text.count('{')
 
                 for idx, gold_citation in enumerate(gold):
