@@ -17,7 +17,7 @@ def main(args):
                 pid, citations = line['pid'], line['citations']
                 CollectionCitations[pid] = [cite for _, cite, _ in citations]
 
-    with open(args.jsonl) as f:
+    with open(args.slice_jsonl) as f:
         for line_idx, line in enumerate(f):
             line = ujson.loads(line)
 
@@ -28,7 +28,7 @@ def main(args):
     for idx in GoldCitations_by_paperID:
         GoldCitations_by_paperID[idx] = list(set(GoldCitations_by_paperID[idx]))
 
-    with open(args.jsonl) as f:
+    with open(args.slice_jsonl) as f:
         current_qid = 0
 
         for line_idx, line in enumerate(f):
@@ -91,9 +91,9 @@ if __name__ == "__main__":
         description=".")
 
     # Input Arguments.
-    parser.add_argument('--jsonl', dest='jsonl', required=True, type=str)
-    parser.add_argument('--ranking-passages', dest='ranking_passages', required=True)
-    parser.add_argument('--ranking-passages', dest='ranking_passages', required=True)
+    parser.add_argument('--collection-jsonl', dest='collection_jsonl', required=True)
+    parser.add_argument('--slice-jsonl', dest='slice_jsonl', required=True, type=str)
+    parser.add_argument('--ranking', dest='ranking', required=True)
 
     args = parser.parse_args()
 
