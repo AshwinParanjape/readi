@@ -40,6 +40,7 @@ def main(args):
                 current_qid += 1
 
     with open(args.ranking) as f:
+        assert f.readline()
         # assert f.readline().strip() == '\t'.join(['qid', 'pid', 'rank', 'score', 'text', 'title', 'cid'])
 
         for line in f:
