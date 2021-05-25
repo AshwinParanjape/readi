@@ -71,7 +71,7 @@ if __name__ == "__main__":
         description=".")
 
     # Input Arguments.
-    parser.add_argument('--jsonl', dest='jsonl', required=True, type=str, nargs='+')
+    parser.add_argument('--jsonl', dest='jsonl', required=True, type=str)
     parser.add_argument('--ranking-passages', dest='ranking_passages', required=True)
 
     args = parser.parse_args()
