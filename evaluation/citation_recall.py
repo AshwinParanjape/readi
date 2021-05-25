@@ -49,7 +49,8 @@ def main(args):
             recalled = [False for _ in gold]
 
             for text in ranking:
-                assert text.count('{') == text.count('}')
+                if text.count('{') != text.count('}'):
+                    print(text.count('{'), text.count('}'))
                 citations_seen_so_far += text.count('{')
 
                 for idx, gold_citation in enumerate(gold):
