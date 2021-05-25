@@ -39,7 +39,7 @@ def main(args):
                 GoldCitations_by_QID[current_qid] = gold_citations
                 current_qid += 1
 
-    with open(args.ranking_passages) as f:
+    with open(args.ranking) as f:
         # assert f.readline().strip() == '\t'.join(['qid', 'pid', 'rank', 'score', 'text', 'title', 'cid'])
 
         for line in f:
