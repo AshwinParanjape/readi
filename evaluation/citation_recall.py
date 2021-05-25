@@ -12,7 +12,7 @@ def main(args):
         for line_idx, line in enumerate(f):
             line = ujson.loads(line)
 
-            for p in line['backgrounds']:
+            for p in line['background']:
                 for _, citation_text, _ in p['citations']:
                     GoldCitations_by_paperID[line_idx].append(citation_text)
 
@@ -26,7 +26,7 @@ def main(args):
             line = ujson.loads(line)
             gold_citations = GoldCitations_by_paperID[line_idx]
 
-            for p in line['backgrounds']:
+            for p in line['background']:
                 GoldCitations_by_QID[current_qid] = gold_citations
                 current_qid += 1
 
