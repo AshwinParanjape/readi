@@ -52,7 +52,7 @@ def main(args):
 
             for line in f:
                 stage, epoch, qid, pid, score = line.strip().split('\t')
-                if stage=='val':
+                if stage==args.stage:
                     qid, pid = int(qid), int(pid)
 
                     Scores_by_QID[qid].append((pid, score))
@@ -126,6 +126,7 @@ if __name__ == "__main__":
     parser.add_argument('--slice-jsonl', dest='slice_jsonl', required=True, type=str)
     parser.add_argument('--ranking', dest='ranking')
     parser.add_argument('--scores', dest='scores') 
+    parser.add_argument('--stage', dest='stage', type=str, default='val') 
 
     args = parser.parse_args()
 
