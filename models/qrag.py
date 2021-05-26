@@ -1137,8 +1137,9 @@ class KLDivergenceFn(torch.nn.Module):
     def forward(self, sources: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor):
         q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
         p_scores = self.p_scorer(sources, batched_docs)
-        p_probs = stable_softmax(p_scores, dim=1)
-        kl_regularization = (q_probs * (q_probs.log() - p_probs.log())).sum()
+        p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
+        q_log_probs = torch.nn.functional.log_softmax(q_scores, dim=1)
+        kl_regularization = (q_probs * (q_log_probs - p_log_probs)).sum()
         return KLDivergence(kl_regularization, p_scores, q_scores)
 
 
@@ -1267,7 +1268,6 @@ if __name__ == '__main__':
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
-    #training_args_group.add_argument('--clip_kld', default=0, type=float, help="0 means don’t clip")
 
 
     Experiment.add_argument_group(parser)
