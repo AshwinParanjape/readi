@@ -2,6 +2,13 @@ import ujson
 
 from argparse import ArgumentParser
 from collections import defaultdict
+import pickle, io
+
+class CPU_Unpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        else: return super().find_class(module, name)
 
 def main(args):
     GoldCitations_by_paperID = defaultdict(list)
@@ -62,8 +69,13 @@ def main(args):
             pids = [p for p, s in pids_scores]
             Ranking_by_QID[qid] = pids
 
-    else:
+    if args.rescored_pkl is not None:
+        with open(args.rescored_pkl, 'rb') as f:
+            print(f"Loading {f.name}...")
+            Ranking = CPU_Unpickler(f).load()
+            Ranking_by_QID = {q['qid']: [d['doc_id'] for d in q['retrievals']] for q in Ranking}
 
+    else:
         with open(args.ranking) as f:
             assert f.readline()
             # assert f.readline().strip() == '\t'.join(['qid', 'pid', 'rank', 'score', 'text', 'title', 'cid'])
@@ -126,6 +138,7 @@ if __name__ == "__main__":
     parser.add_argument('--slice-jsonl', dest='slice_jsonl', required=True, type=str)
     parser.add_argument('--ranking', dest='ranking')
     parser.add_argument('--scores', dest='scores') 
+    parser.add_argument('--rescored_pkl', dest='rescored_pkl') 
     parser.add_argument('--stage', dest='stage', type=str, default='val') 
 
     args = parser.parse_args()
