@@ -800,12 +800,13 @@ class ELBOFn(torch.nn.Module):
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
         q_scores = self.q_scorer(st_text, batched_docs)
         q_probs = stable_softmax(q_scores, dim=1)
+        q_log_probs = torch.nn.functional.log_softmax(q_scores, dim=1)
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
 
         marginalized_nll_loss = -torch.logsumexp(p_log_probs + generator_log_prob, dim=1).sum(dim=0)
 
         reconstruction_score = (q_probs * generator_log_prob).sum()
-        kl_regularization = (q_probs * (q_probs.log() - p_probs.log())).sum()
+        kl_regularization = (q_probs * (q_log_probs - p_log_probs)).sum()
         elbo_loss = -(reconstruction_score - kl_regularization)
 
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
@@ -1266,6 +1267,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
+    #training_args_group.add_argument('--clip_kld', default=0, type=float, help="0 means don’t clip")
 
 
     Experiment.add_argument_group(parser)
