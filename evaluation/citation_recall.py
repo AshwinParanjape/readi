@@ -43,19 +43,40 @@ def main(args):
                 Qid2Cid[current_qid] = line['cid']
                 current_qid += 1
 
-    with open(args.ranking) as f:
-        assert f.readline()
-        # assert f.readline().strip() == '\t'.join(['qid', 'pid', 'rank', 'score', 'text', 'title', 'cid'])
+    
+    if args.scores is not None:
+        with open(args.scores) as f:
+            assert f.readline()
+            #assert f.readline().strip() == '\t'.join(['stage','epoch', 'q_id', 'doc_id', 'p_score']
+            Scores_by_QID = defaultdict(list)
 
-        for line in f:
-            # qid, pid, rank, score, text, title, cid = line.strip().split('\t')
-            qid, pid, *_ = line.strip().split('\t')
-            qid, pid = int(qid), int(pid)
+            for line in f:
+                stage, epoch, qid, pid, score = line.strip().split('\t')
+                if stage=='val':
+                    qid, pid = int(qid), int(pid)
 
-            Ranking_by_QID[qid].append(pid)
-            # Ranking_by_QID[qid].append(text)
+                    Scores_by_QID[qid].append((pid, score))
+                # Ranking_by_QID[qid].append(text)
+        for qid, pids_scores in Scores_by_QID.items():
+            pids_scores = sorted(pids_scores, key=lambda p: p[1], reverse=True)
+            pids = [p for p, s in pids_scores]
+            Ranking_by_QID[qid] = pids
+
+    else:
+
+        with open(args.ranking) as f:
+            assert f.readline()
+            # assert f.readline().strip() == '\t'.join(['qid', 'pid', 'rank', 'score', 'text', 'title', 'cid'])
+
+            for line in f:
+                # qid, pid, rank, score, text, title, cid = line.strip().split('\t')
+                qid, pid, *_ = line.strip().split('\t')
+                qid, pid = int(qid), int(pid)
+
+                Ranking_by_QID[qid].append(pid)
+                # Ranking_by_QID[qid].append(text)
             
-    assert GoldCitations_by_QID.keys() == Ranking_by_QID.keys(), (len(GoldCitations_by_QID), len(Ranking_by_QID))
+    assert GoldCitations_by_QID.keys() == Ranking_by_QID.keys() or args.ranking is None, (len(GoldCitations_by_QID), len(Ranking_by_QID))
 
     for cutoff in [10, 20, 50, 100]:
         Recall = []
@@ -103,7 +124,8 @@ if __name__ == "__main__":
     # Input Arguments.
     parser.add_argument('--collection-jsonl', dest='collection_jsonl', required=True)
     parser.add_argument('--slice-jsonl', dest='slice_jsonl', required=True, type=str)
-    parser.add_argument('--ranking', dest='ranking', required=True)
+    parser.add_argument('--ranking', dest='ranking')
+    parser.add_argument('--scores', dest='scores') 
 
     args = parser.parse_args()
 
