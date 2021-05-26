@@ -617,10 +617,12 @@ class GeneratorOutput(Seq2SeqLMOutput):
     output_encoding: Dict = None
 
 class Generator(torch.nn.Module):
-    def __init__(self, generator, tokenizer):
+    def __init__(self, generator, tokenizer, input_maxlen=256, output_maxlen=64):
         super().__init__()
         self.generator = generator
         self.tokenizer = tokenizer
+        self.input_maxlen=input_maxlen
+        self.output_maxlen=output_maxlen
 
     def prepare_generator_inputs(self, sources, batched_docs=None):
         if batched_docs:
@@ -630,7 +632,7 @@ class Generator(torch.nn.Module):
             generator_inputs = [f'{source}' for source in sources]
 
         input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True,
-                                                       max_length=256, pad_to_multiple_of=8)
+                                                       max_length=self.input_maxlen, pad_to_multiple_of=8)
         input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in
                                input_encoding.data.items()}
         return input_encoding
@@ -642,11 +644,11 @@ class Generator(torch.nn.Module):
         else:
             generator_inputs = [f'{source}' for source in sources]
             generator_outputs = [f'{target}' for target in targets]
-        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True, max_length=256, pad_to_multiple_of=8)
+        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True, max_length=self.input_maxlen, pad_to_multiple_of=8)
         input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in input_encoding.data.items()}
 
 
-        output_encoding: BatchEncoding = self.tokenizer(generator_outputs, padding=True, return_tensors='pt', truncation=True, max_length=64, pad_to_multiple_of=8)
+        output_encoding: BatchEncoding = self.tokenizer(generator_outputs, padding=True, return_tensors='pt', truncation=True, max_length=self.output_maxlen, pad_to_multiple_of=8)
         output_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in output_encoding.data.items()}
         return input_encoding, output_encoding
 
@@ -837,12 +839,12 @@ class InheritableCheckpointMixin():
 
 
 class NLLLossSystem(pl.LightningModule):
-    def __init__(self, expdir='', lr=1e-3, truncate_query_from_start=False) :
+    def __init__(self, query_maxlen=180, label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer)
+        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen, output_maxlen=label_maxlen)
         self.loss_fn = LM_NLL(self.generator)
         self.expdir=expdir
         self.lr = lr
@@ -876,13 +878,13 @@ class NLLLossSystem(pl.LightningModule):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False) :
+    def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer)
+        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -950,13 +952,13 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer)
+        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -1057,11 +1059,11 @@ class ReconstructionLossFn(torch.nn.Module):
 
 class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
     # We assume that the Q scorer is fixed and hence doesn't need to be run
-    def __init__(self, expdir='', lr=1e-3, truncate_query_from_start=False):
+    def __init__(self, query_maxlen=180, doc_maxlen=64, label_maxlen=64 ,expdir='', lr=1e-3, truncate_query_from_start=False):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
-        self.generator = Generator(self._generator, self._generator_tokenizer)
+        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
         self.lr = lr
         self.expdir = expdir
         self.set_loss_fn()
@@ -1212,6 +1214,7 @@ if __name__ == '__main__':
     scorer_group = parser.add_argument_group(title='scorer (ColBERT) args')
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
+    scorer_group.add_argument('--label_maxlen', dest='label_maxlen', default=64, type=int)
     scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
 
     checkpoints_group = parser.add_argument_group(title='paths to various checkpoints')
@@ -1317,7 +1320,7 @@ if __name__ == '__main__':
     if args.loss_type == 'NLL':
         # Still old style
         model = NLLLossSystem(lr=args.lr, expdir=curexpdir,
-                              truncate_query_from_start=args.truncate_query_from_start)
+                              truncate_query_from_start=args.truncate_query_from_start, query_maxlen=args.query_maxlen, label_maxlen=args.label_maxlen)
 
     elif args.loss_type == 'Marginalized':
         # Still old style loading from checkpoints
@@ -1331,7 +1334,7 @@ if __name__ == '__main__':
         else:
             assert False
         model = MarginalizedLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen,
-                                                     doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
+                                                     doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, expdir=curexpdir, lr=args.lr,
                                                      truncate_query_from_start=args.truncate_query_from_start)
     elif args.loss_type == 'ELBO':
         #TODO, test if the following are identical
@@ -1345,15 +1348,17 @@ if __name__ == '__main__':
         else:
             assert False
 
-        model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
+        model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, 
                                                      expdir=curexpdir, lr=args.lr,
                                                      truncate_query_from_start=args.truncate_query_from_start)
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
             state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
-            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict,  expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
+            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, 
+                    label_maxlen=args.label_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
         else:
-            model = OnlyGeneratorTraining(expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
+            model = OnlyGeneratorTraining(query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, 
+                    label_maxlen=args.label_maxlen,expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
     elif args.loss_type == 'KLD' or args.loss_type=='PosNeg':
         if args.loss_type == 'KLD':
             loss_fn = KLDivergenceFn
