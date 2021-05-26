@@ -786,15 +786,19 @@ class ELBO():
                 ('nll.tsv', self.lm_nll)]
 
 class ELBOFn(torch.nn.Module):
-    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator):
+    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False):
         super().__init__()
         self.p_scorer = p_scorer
         self.q_scorer = q_scorer
         self.generator = generator
         self.generator_nll = LM_NLL(self.generator)
+        self.invert_st_order=invert_st_order
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
-        st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
+        if self.invert_st_order:
+            st_text = [t + ' | ' +s for s, t in zip(sources, targets)]
+        else:
+            st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
         p_scores = self.p_scorer(sources, batched_docs)
         p_probs = stable_softmax(p_scores, dim=1)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
@@ -954,7 +958,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -976,6 +980,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         if q_scorer_checkpoint:
             saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
             self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.invert_st_order = invert_st_order
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
@@ -993,7 +998,9 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         return state_dict
 
     def set_loss_fn(self):
-        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator)
+        if self.invert_st_order:
+            print("Using inverted ST order: target | source for the Q retriever")
+        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order)
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint, generator_checkpoint):
@@ -1268,6 +1275,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
+    training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
 
 
     Experiment.add_argument_group(parser)
@@ -1355,7 +1363,7 @@ if __name__ == '__main__':
 
         model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, 
                                                      expdir=curexpdir, lr=args.lr,
-                                                     truncate_query_from_start=args.truncate_query_from_start)
+                                                     truncate_query_from_start=args.truncate_query_from_start, invert_st_order=args.invert_st_order)
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
             state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
