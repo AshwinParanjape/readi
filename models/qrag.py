@@ -214,6 +214,7 @@ class ClosedSetRetrievals():
             last_qid = None
             last_qid_retrievals = None
             for chunk_df in pd.read_csv(file, sep='\t', chunksize=100000,
+                                        usecols=[0,1,2,3,4,5],
                                         names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'], header=0,
                                         dtype={'qid': int, 'pid': int, 'rank': int, 'score': float, 'doc_text':str,
                                                'title':str} ,
