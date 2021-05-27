@@ -46,7 +46,7 @@ class RetrievalScorer(pl.LightningModule):
         return None
 
 class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
+    def __init__(self, query_maxlen=64, doc_maxlen=256, label_maxlen=64, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
                  baseline_generator: Generator=None,
                  **generation_kwargs):
         super().__init__()
@@ -57,7 +57,7 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer)
+        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -160,7 +160,8 @@ def generate():
     scorer_group = parser.add_argument_group(title='scorer (ColBERT) args')
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
-    scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=True)
+    scorer_group.add_argument('--label_maxlen', dest='doc_maxlen', default=180, type=int)
+    scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
 
     paths_group = parser.add_argument_group(title='input file paths')
     paths_group.add_argument('--source_path', type=str, default=(base_path / 'data/wow-kilt/val.source').as_posix(),
@@ -171,7 +172,7 @@ def generate():
                              help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
     paths_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can only be qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
     paths_group.add_argument('--generator_checkpoint', default=None, type=str, help='Path to generator checkpoint')
-    paths_group.add_argument('--no_retrieval_checkpoint', type=str, default=(qtraining_exp_base_path / '17/checkpoints/epoch=1-step=15763.ckpt').as_posix() ,
+    paths_group.add_argument('--no_retrieval_checkpoint', type=str, #default=(qtraining_exp_base_path / '17/checkpoints/epoch=1-step=15763.ckpt').as_posix() ,
                              help='Path to checkpoint which contains the generator and p_scorer model')
 
 
@@ -215,15 +216,16 @@ def generate():
     #generator.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('generator')})
     #p_scorer = ColBERTScorer.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('p_scorer')})
     #model = TargetGenerator(generator, p_scorer, expdir=curexpdir, strict=False)
-    baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
     if args.n_samples_per_doc == 0:
         model = RetrievalScorer.load_from_checkpoint(args.p_scorer_checkpoint, strict=False,
+                                                 query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                                                      expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start)
     else:
         state_dict = TargetGenerator.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
                                                                        generator_checkpoint=args.generator_checkpoint)
+        baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
         model = TargetGenerator.init_from_checkpoints(state_dict, expdir=curexpdir,
-                                                 query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
+                                                 query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen,
                                                  truncate_query_from_start=args.truncate_query_from_start,
                                                  n_samples_per_doc = args.n_samples_per_doc,
                                                  baseline_generator=baseline_model.generator,
