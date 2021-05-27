@@ -480,6 +480,23 @@ class PosteriorDocumentSampler(DocumentSampler):
 
         return mixed_samples
 
+class PosteriorTopKDocumentSampler(DocumentSampler):
+    def __init__(self, k):
+        self.k = k
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
+        if len(retrievals) == 0:
+            return retrievals
+        if self.k > len(retrievals):
+            print("Fewer retrievals than k", sys.stderr)
+            k = len(retrievals)
+        else:
+            k= self.k
+
+        top_k_retrievals = retrievals.sort_values('score_q', ascending=False)[:k]
+        return top_k_retrievals
+
 class Seq2SeqDataset(torch.utils.data.IterableDataset):
     def __init__(self, source_path: str, target_path: str, worker_id=0, n_workers=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
@@ -1400,11 +1417,16 @@ if __name__ == '__main__':
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
-        assert args.doc_sampler == 'SimpleDocumentSampler'
-        doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        assert args.doc_sampler in {'SimpleDocumentSampler', 'TopKDocumentSampler'}
+        if args.doc_sampler == 'SimpleDocumentSampler':
+            doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        elif args.doc_sampler == 'TopKDocumentSampler':
+            doc_sampler = TopKDocumentSampler(args.n_sampled_docs_train)
+            val_doc_sampler = TopKDocumentSampler(args.n_sampled_docs_valid)
+
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'Reconstruction':
@@ -1438,7 +1460,7 @@ if __name__ == '__main__':
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
@@ -1447,6 +1469,8 @@ if __name__ == '__main__':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PosteriorDocumentSampler':
             doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+        elif args.doc_sampler == 'PosteriorTopKDocumentSampler':
+            doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
         else:
             assert False
 

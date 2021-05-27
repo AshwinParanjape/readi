@@ -159,8 +159,8 @@ def generate():
     qtraining_exp_base_path = Path('/scr/biggest/ashwinp/experiments/qtraining/')
     scorer_group = parser.add_argument_group(title='scorer (ColBERT) args')
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
-    scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
-    scorer_group.add_argument('--label_maxlen', dest='doc_maxlen', default=180, type=int)
+    scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=184, type=int)
+    scorer_group.add_argument('--label_maxlen', dest='doc_maxlen', default=64, type=int)
     scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
 
     paths_group = parser.add_argument_group(title='input file paths')
