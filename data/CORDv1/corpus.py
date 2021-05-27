@@ -106,7 +106,13 @@ class CorpusBuilder:
                         new_text.append(citation)
                         p_citations.append((key, citation, refid))
 
-            new_text.append(text[offset:])
+            more_text = text[offset:]
+
+            # TODO: These would improve quality, but not currently done!
+            # more_text = more_text.replace('{', ' ')
+            # more_text = more_text.replace('}', ' ')
+            new_text.append(more_text)
+
             new_text = ' '.join(new_text)
 
             psg = {}
