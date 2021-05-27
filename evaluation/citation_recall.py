@@ -69,7 +69,7 @@ def main(args):
             pids = [p for p, s in pids_scores]
             Ranking_by_QID[qid] = pids
 
-    if args.rescored_pkl is not None:
+    elif args.rescored_pkl is not None:
         with open(args.rescored_pkl, 'rb') as f:
             print(f"Loading {f.name}...")
             Ranking = CPU_Unpickler(f).load()
