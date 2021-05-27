@@ -480,6 +480,23 @@ class PosteriorDocumentSampler(DocumentSampler):
 
         return mixed_samples
 
+class PosteriorTopKDocumentSampler(DocumentSampler):
+    def __init__(self, k):
+        self.k = k
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
+        if len(retrievals) == 0:
+            return retrievals
+        if self.k > len(retrievals):
+            print("Fewer retrievals than k", sys.stderr)
+            k = len(retrievals)
+        else:
+            k= self.k
+
+        top_k_retrievals = retrievals.sort_values('score_q', ascending=False)[:k]
+        return top_k_retrievals
+
 class Seq2SeqDataset(torch.utils.data.IterableDataset):
     def __init__(self, source_path: str, target_path: str, worker_id=0, n_workers=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
@@ -658,7 +675,7 @@ class Generator(torch.nn.Module):
         lm_output : Seq2SeqLMOutput = self.generator(
             input_ids = input_encoding['input_ids'],
             attention_mask = input_encoding['attention_mask'],
-            decoder_input_ids = output_encoding['input_ids'],
+            labels = output_encoding['input_ids'],
             return_dict=True
         )
         return lm_output
@@ -722,9 +739,11 @@ class LM_NLL(torch.nn.Module):
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]=None):
         lm_output = self.generator(sources, targets, batched_docs)
-        labels = lm_output.output_encoding['input_ids'][:, 1:] #Shape: Bsz*nd x (len-1)
+        #labels = lm_output.output_encoding['input_ids'][:, 1:] #Shape: Bsz*nd x (len-1)
+        labels = lm_output.output_encoding['input_ids'] #Shape: Bsz*nd x len
         labels = labels.permute(1, 0) #Shape: (len-1) x Bsz*nd
-        logits = lm_output.logits[:, :-1, :] #Shape: Bsz*nd x (len-1) x vocab_size
+        #logits = lm_output.logits[:, :-1, :] #Shape: Bsz*nd x (len-1) x vocab_size
+        logits = lm_output.logits #Shape: Bsz*nd x len x vocab_size
         logits = logits.permute(1,2,0) #Shape: (len-1) x vocab_size x Bsz*nd
         nll = torch.nn.functional.cross_entropy(logits, labels, reduction='none').sum(dim=0) # Shape: Bsz*nd
         if batched_docs:
@@ -786,15 +805,19 @@ class ELBO():
                 ('nll.tsv', self.lm_nll)]
 
 class ELBOFn(torch.nn.Module):
-    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator):
+    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False):
         super().__init__()
         self.p_scorer = p_scorer
         self.q_scorer = q_scorer
         self.generator = generator
         self.generator_nll = LM_NLL(self.generator)
+        self.invert_st_order=invert_st_order
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
-        st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
+        if self.invert_st_order:
+            st_text = [t + ' | ' +s for s, t in zip(sources, targets)]
+        else:
+            st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
         p_scores = self.p_scorer(sources, batched_docs)
         p_probs = stable_softmax(p_scores, dim=1)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
@@ -954,7 +977,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -976,6 +999,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         if q_scorer_checkpoint:
             saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
             self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.invert_st_order = invert_st_order
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
@@ -993,7 +1017,9 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         return state_dict
 
     def set_loss_fn(self):
-        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator)
+        if self.invert_st_order:
+            print("Using inverted ST order: target | source for the Q retriever")
+        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order)
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint, generator_checkpoint):
@@ -1268,6 +1294,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
+    training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
 
 
     Experiment.add_argument_group(parser)
@@ -1355,7 +1382,7 @@ if __name__ == '__main__':
 
         model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, 
                                                      expdir=curexpdir, lr=args.lr,
-                                                     truncate_query_from_start=args.truncate_query_from_start)
+                                                     truncate_query_from_start=args.truncate_query_from_start, invert_st_order=args.invert_st_order)
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
             state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
@@ -1390,11 +1417,16 @@ if __name__ == '__main__':
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type == 'Marginalized':
-        assert args.doc_sampler == 'SimpleDocumentSampler'
-        doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        assert args.doc_sampler in {'SimpleDocumentSampler', 'TopKDocumentSampler'}
+        if args.doc_sampler == 'SimpleDocumentSampler':
+            doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        elif args.doc_sampler == 'TopKDocumentSampler':
+            doc_sampler = TopKDocumentSampler(args.n_sampled_docs_train)
+            val_doc_sampler = TopKDocumentSampler(args.n_sampled_docs_valid)
+
         train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'Reconstruction':
@@ -1428,7 +1460,7 @@ if __name__ == '__main__':
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
@@ -1437,6 +1469,8 @@ if __name__ == '__main__':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PosteriorDocumentSampler':
             doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+        elif args.doc_sampler == 'PosteriorTopKDocumentSampler':
+            doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
         else:
             assert False
 
