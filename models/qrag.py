@@ -658,7 +658,7 @@ class Generator(torch.nn.Module):
         lm_output : Seq2SeqLMOutput = self.generator(
             input_ids = input_encoding['input_ids'],
             attention_mask = input_encoding['attention_mask'],
-            decoder_input_ids = output_encoding['input_ids'],
+            labels = output_encoding['input_ids'],
             return_dict=True
         )
         return lm_output
@@ -722,9 +722,11 @@ class LM_NLL(torch.nn.Module):
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]=None):
         lm_output = self.generator(sources, targets, batched_docs)
-        labels = lm_output.output_encoding['input_ids'][:, 1:] #Shape: Bsz*nd x (len-1)
+        #labels = lm_output.output_encoding['input_ids'][:, 1:] #Shape: Bsz*nd x (len-1)
+        labels = lm_output.output_encoding['input_ids'] #Shape: Bsz*nd x len
         labels = labels.permute(1, 0) #Shape: (len-1) x Bsz*nd
-        logits = lm_output.logits[:, :-1, :] #Shape: Bsz*nd x (len-1) x vocab_size
+        #logits = lm_output.logits[:, :-1, :] #Shape: Bsz*nd x (len-1) x vocab_size
+        logits = lm_output.logits #Shape: Bsz*nd x len x vocab_size
         logits = logits.permute(1,2,0) #Shape: (len-1) x vocab_size x Bsz*nd
         nll = torch.nn.functional.cross_entropy(logits, labels, reduction='none').sum(dim=0) # Shape: Bsz*nd
         if batched_docs:
