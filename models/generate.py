@@ -167,7 +167,7 @@ def generate():
     paths_group.add_argument('--source_path', type=str, default=(base_path / 'data/wow-kilt/val.source').as_posix(),
                              help='Path to train/val.source file, each line contains input to the generator')
     paths_group.add_argument('--target_path', type=str, default=(base_path / 'data/wow-kilt/val.target').as_posix(),
-                             help='(Optional) Path to train/val.target file, each line contains input to the generator')
+                             help='Path to train/val.target file, if given will be recorded in output, but not used to generate or compute any values (path is required but optional in spirit)')
     paths_group.add_argument('--p_ranked_passages', type=str, default=(rerank_exp_base_path / '33/ranking_passages.tsv').as_posix() ,
                              help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
     paths_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can only be qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
