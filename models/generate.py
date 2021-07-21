@@ -181,7 +181,7 @@ def generate():
                                 help="The maximum length of the sequence to be generated.")
     decoding_group.add_argument('--min_length', type=int, default=5,
                                 help="The minimum length of the sequence to be generated.")
-    decoding_group.add_argument('--do_sample', type=bool, default=True,
+    decoding_group.add_argument('--do_sample',  default=False, action='store_true',
                                 help="Whether or not to use sampling ; use greedy decoding otherwise")
     decoding_group.add_argument('--num_beams', type=int, default=1,
                                 help="Number of beams for beam search. 1 means no beam search.")
