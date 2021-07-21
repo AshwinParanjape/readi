@@ -183,7 +183,7 @@ def generate():
                                 help="The minimum length of the sequence to be generated.")
     decoding_group.add_argument('--do_sample', type=bool, default=True,
                                 help="Whether or not to use sampling ; use greedy decoding otherwise")
-    decoding_group.add_argument('--num_beams', type=bool, default=8,
+    decoding_group.add_argument('--num_beams', type=int, default=1,
                                 help="Number of beams for beam search. 1 means no beam search.")
     decoding_group.add_argument('--temperature', type=float, default=1.0, help="The value used to module the next token probabilities.")
     decoding_group.add_argument('--top_k', type=int, default=50, help="The number of highest probability vocabulary tokens to keep for top-k-filtering.")
