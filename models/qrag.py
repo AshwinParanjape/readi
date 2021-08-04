@@ -111,7 +111,7 @@ def stable_softmax(input, dim, *args, **kwargs):
 
 
 class ColBERT(BertPreTrainedModel):
-    def __init__(self, config, query_maxlen, doc_maxlen, mask_punctuation=True, dim=128, similarity_metric='cosine'):
+    def __init__(self, config, query_maxlen, doc_maxlen, mask_punctuation=True, dim=128, similarity_metric='cosine', normalize_embeddings=True):
         super(ColBERT, self).__init__(config)
 
         self.query_maxlen = query_maxlen
@@ -130,6 +130,7 @@ class ColBERT(BertPreTrainedModel):
 
         self.bert = BertModel(config)
         self.linear = torch.nn.Linear(config.hidden_size, dim, bias=False)
+        self.normalize_embeddings = normalize_embeddings
 
         self.init_weights()
 
@@ -149,8 +150,9 @@ class ColBERT(BertPreTrainedModel):
         D = embeddings[q_input_ids.shape[0]:, ...]
         mask = torch.tensor(self.mask(input_ids)).pin_memory().to(D, non_blocking=True).unsqueeze(2)
         D = D * mask
-        Q = torch.nn.functional.normalize(Q, p=2, dim=2)
-        D = torch.nn.functional.normalize(D, p=2, dim=2)
+        if self.normalize_embeddings:
+            Q = torch.nn.functional.normalize(Q, p=2, dim=2)
+            D = torch.nn.functional.normalize(D, p=2, dim=2)
         return Q, D
 
     def query(self, input_ids, attention_mask):
@@ -158,7 +160,9 @@ class ColBERT(BertPreTrainedModel):
         Q = self.bert(input_ids, attention_mask=attention_mask)[0]
         Q = self.linear(Q)
 
-        return torch.nn.functional.normalize(Q, p=2, dim=2)
+        if self.normalize_embeddings:
+            Q = torch.nn.functional.normalize(Q, p=2, dim=2)
+        return Q
 
     def doc(self, input_ids, attention_mask, keep_dims=True):
         #input_ids, attention_mask = input_ids.to(DEVICE), attention_mask.to(DEVICE)
@@ -169,7 +173,8 @@ class ColBERT(BertPreTrainedModel):
         mask = torch.tensor(self.mask(input_ids)).pin_memory().to(D, non_blocking=True).unsqueeze(2)
         D = D * mask
 
-        D = torch.nn.functional.normalize(D, p=2, dim=2)
+        if self.normalize_embeddings:
+            D = torch.nn.functional.normalize(D, p=2, dim=2)
 
         if not keep_dims:
             D, mask = D.cpu().to(dtype=torch.float16), mask.cpu().bool().squeeze(-1)
@@ -903,7 +908,7 @@ class NLLLossSystem(pl.LightningModule):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False) :
+    def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False, normalize_scorer_embeddings=True) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -914,6 +919,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen,
+                                          normalize_embeddings=normalize_scorer_embeddings,
                                           )
         #saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
         #self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
@@ -977,7 +983,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -987,7 +993,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
-                                          doc_maxlen=doc_maxlen)
+                                          doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings)
         if p_scorer_checkpoint:
             saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
             self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
@@ -995,7 +1001,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
-                                          doc_maxlen=doc_maxlen)
+                                          doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings)
         if q_scorer_checkpoint:
             saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
             self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
@@ -1170,12 +1176,13 @@ class KLDivergenceFn(torch.nn.Module):
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False):
+    def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, normalize_scorer_embeddings=True):
         super().__init__()
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
-                                                      doc_maxlen=doc_maxlen)
+                                                      doc_maxlen=doc_maxlen, 
+                                                      normalize_embeddings=normalize_scorer_embeddings)
         self.loss_fn_constructor = loss_fn
         self.set_loss_fn()
         self.lr = lr
@@ -1245,6 +1252,7 @@ if __name__ == '__main__':
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
     scorer_group.add_argument('--label_maxlen', dest='label_maxlen', default=64, type=int)
     scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
+    scorer_group.add_argument('--unnormalized_scorer_embeddings', action='store_true', default=False)
 
     checkpoints_group = parser.add_argument_group(title='paths to various checkpoints')
     checkpoints_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can be from colbert or qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
@@ -1316,6 +1324,7 @@ if __name__ == '__main__':
     # The code won't work with multiple nodes, for which one needs to have a global rank and world size
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
     checkpoint_callback = ModelCheckpoint(monitor=None, save_top_k=-1)
+    normalize_scorer_embeddings=not args.unnormalized_scorer_embeddings
     if args.resume_training_from_checkpoint:
         print("Overriding the model using the checkpoint")
         trainer = Trainer(gpus=args.gpus, logger=logger,
@@ -1352,7 +1361,7 @@ if __name__ == '__main__':
     if args.loss_type == 'NLL':
         # Still old style
         model = NLLLossSystem(lr=args.lr, expdir=curexpdir,
-                              truncate_query_from_start=args.truncate_query_from_start, query_maxlen=args.query_maxlen, label_maxlen=args.label_maxlen)
+                              truncate_query_from_start=args.truncate_query_from_start, query_maxlen=args.query_maxlen, label_maxlen=args.label_maxlen, )
 
     elif args.loss_type == 'Marginalized':
         # Still old style loading from checkpoints
@@ -1367,7 +1376,8 @@ if __name__ == '__main__':
             assert False
         model = MarginalizedLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen,
                                                      doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, expdir=curexpdir, lr=args.lr,
-                                                     truncate_query_from_start=args.truncate_query_from_start)
+                                                     truncate_query_from_start=args.truncate_query_from_start, 
+                                                     normalize_scorer_embeddings=normalize_scorer_embeddings)
     elif args.loss_type == 'ELBO':
         #TODO, test if the following are identical
         if args.scorer_checkpoint_type == 'colbert':
@@ -1382,7 +1392,9 @@ if __name__ == '__main__':
 
         model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, 
                                                      expdir=curexpdir, lr=args.lr,
-                                                     truncate_query_from_start=args.truncate_query_from_start, invert_st_order=args.invert_st_order)
+                                                     truncate_query_from_start=args.truncate_query_from_start, invert_st_order=args.invert_st_order,
+                                                     normalize_scorer_embeddings=normalize_scorer_embeddings
+                                                     )
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
             state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
@@ -1406,7 +1418,9 @@ if __name__ == '__main__':
                 p_scorer_checkpoint=args.p_scorer_checkpoint)
         model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, query_maxlen=args.query_maxlen,
                                                      doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
-                                                        truncate_query_from_start=args.truncate_query_from_start)
+                                                        truncate_query_from_start=args.truncate_query_from_start, 
+                                                     normalize_scorer_embeddings=normalize_scorer_embeddings
+                                                     )
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
 
