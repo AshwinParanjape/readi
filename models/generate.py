@@ -17,18 +17,20 @@ from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem,
     NLLLossSystem, TopKDocumentSampler, InheritableCheckpointMixin, filter_state_dict
 
 class RetrievalScorer(pl.LightningModule):
-    def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False):
+    def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, normalize_scorer_embeddings=False):
         super().__init__()
         self.expdir = expdir
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen,
+                                                      normalize_embeddings=normalize_scorer_embeddings
                                                       )
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen,
+                                                      normalize_embeddings=normalize_scorer_embeddings
                                                       )
         self.instances = []
 
@@ -47,7 +49,7 @@ class RetrievalScorer(pl.LightningModule):
 
 class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen=64, doc_maxlen=256, label_maxlen=64, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
-                 baseline_generator: Generator=None,
+                 baseline_generator: Generator=None, normalize_scorer_embeddings=False,
                  **generation_kwargs):
         super().__init__()
         self.n_samples_per_doc = n_samples_per_doc
@@ -62,11 +64,13 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen,
+                                                      normalize_embeddings=normalize_scorer_embeddings
                                           )
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen,
+                                                      normalize_embeddings=normalize_scorer_embeddings
                                                       )
         self.baseline_generator = baseline_generator
         self.instances = []
@@ -162,6 +166,7 @@ def generate():
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=184, type=int)
     scorer_group.add_argument('--label_maxlen', dest='label_maxlen', default=64, type=int)
     scorer_group.add_argument('--truncate_query_from_start', action='store_true', default=False)
+    scorer_group.add_argument('--unnormalized_scorer_embeddings', action='store_true', default=False)
 
     paths_group = parser.add_argument_group(title='input file paths')
     paths_group.add_argument('--source_path', type=str, default=(base_path / 'data/wow-kilt/val.source').as_posix(),
@@ -216,10 +221,12 @@ def generate():
     #generator.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('generator')})
     #p_scorer = ColBERTScorer.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('p_scorer')})
     #model = TargetGenerator(generator, p_scorer, expdir=curexpdir, strict=False)
+    normalize_scorer_embeddings=not args.unnormalized_scorer_embeddings
     if args.n_samples_per_doc == 0:
         model = RetrievalScorer.load_from_checkpoint(args.p_scorer_checkpoint, strict=False,
                                                  query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
-                                                     expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start)
+                                                     expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start, 
+                                                     normalize_scorer_embeddings = normalize_scorer_embeddings)
     else:
         state_dict = TargetGenerator.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
                                                                        generator_checkpoint=args.generator_checkpoint)
@@ -236,6 +243,7 @@ def generate():
                                                  num_beams = args.num_beams,
                                                  min_length = args.min_length,
                                                  max_length = args.max_length,
+                                                 normalize_scorer_embeddings = normalize_scorer_embeddings
                                                  )
     #doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
     doc_sampler = TopKDocumentSampler(k=args.n_sampled_docs)
