@@ -190,11 +190,7 @@ class ColBERT(BertPreTrainedModel):
 
     def maxsum_window(self, tensor, dim, size):
         # For all uses in this class, tensor should be of shape N x * x lq and dim should be last dimension
-        print(tensor)
         val= tensor.unfold(dimension=dim, size=size, step=1).sum(dim=-1).max(dim=dim).values
-        print(tensor.unfold(dimension=dim, size=size, step=1))
-        print(tensor.unfold(dimension=dim, size=size, step=1).sum(dim=-1))
-        print(val)
         return val
 
 
