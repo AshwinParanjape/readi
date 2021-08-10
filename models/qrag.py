@@ -111,7 +111,7 @@ def stable_softmax(input, dim, *args, **kwargs):
 
 
 class ColBERT(BertPreTrainedModel):
-    def __init__(self, config, query_maxlen, doc_maxlen, mask_punctuation=True, dim=128, similarity_metric='cosine', normalize_embeddings=True, query_sum_topk=None, query_sum_window=None):
+    def __init__(self, config, query_maxlen, doc_maxlen, mask_punctuation=True, dim=128, similarity_metric='cosine', normalize_embeddings=True, query_sum_topk=None, query_sum_window=None, agg_fn =torch.sum):
         super(ColBERT, self).__init__(config)
 
         self.query_maxlen = query_maxlen
@@ -133,6 +133,7 @@ class ColBERT(BertPreTrainedModel):
         self.normalize_embeddings = normalize_embeddings
         self.query_sum_topk = query_sum_topk
         self.query_sum_window = query_sum_window
+        self.agg_fn = agg_fn
         self.init_weights()
 
     def forward(self, Q, D):
@@ -185,12 +186,12 @@ class ColBERT(BertPreTrainedModel):
 
     def maxsum_topk(self, tensor, dim, k):
         # For all uses in this class, tensor should be of shape N x * x lq and dim should be last dimension
-        val = torch.topk(tensor, dim=dim, k=k).values.sum(dim=dim)
+        val = self.agg_fn(torch.topk(tensor, dim=dim, k=k).values, dim=dim)
         return val
 
     def maxsum_window(self, tensor, dim, size):
         # For all uses in this class, tensor should be of shape N x * x lq and dim should be last dimension
-        val= tensor.unfold(dimension=dim, size=size, step=1).sum(dim=-1).max(dim=dim).values
+        val= self.agg_fn(tensor.unfold(dimension=dim, size=size, step=1), dim=-1).max(dim=dim).values
         return val
 
 
@@ -220,7 +221,7 @@ class ColBERT(BertPreTrainedModel):
         if self.query_sum_window is not None:
             return self.maxsum_window(v, sumdim, self.query_sum_window)
         else:
-            return v.sum(1)
+            return self.agg_fn(v, dim=sumdim)
 
     def mask(self, input_ids):
         mask = [[(x not in self.skiplist) and (x != 0) for x in d] for d in input_ids.cpu().tolist()]
@@ -930,7 +931,7 @@ class NLLLossSystem(pl.LightningModule):
 
 class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False, 
-            normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None) :
+            normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -944,6 +945,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           normalize_embeddings=normalize_scorer_embeddings,
                                           query_sum_topk = query_sum_topk, 
                                           query_sum_window = query_sum_window, 
+                                          agg_fn=scorer_agg_fn,
                                           )
         #saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
         #self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
@@ -1007,7 +1009,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -1020,6 +1022,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings,
                                           query_sum_topk = query_sum_topk, 
                                           query_sum_window = query_sum_window, 
+                                          agg_fn=scorer_agg_fn,
                                           )
         if p_scorer_checkpoint:
             saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
@@ -1031,6 +1034,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings,
                                           query_sum_topk = query_sum_topk, 
                                           query_sum_window = query_sum_window, 
+                                          agg_fn=scorer_agg_fn,
                                           )
         if q_scorer_checkpoint:
             saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
@@ -1206,7 +1210,7 @@ class KLDivergenceFn(torch.nn.Module):
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None):
+    def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
         super().__init__()
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
@@ -1215,6 +1219,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
                                                       normalize_embeddings=normalize_scorer_embeddings,
                                                       query_sum_topk = query_sum_topk, 
                                                       query_sum_window = query_sum_window, 
+                                                      agg_fn=scorer_agg_fn,
                                                       )
         self.loss_fn_constructor = loss_fn
         self.set_loss_fn()
@@ -1288,6 +1293,7 @@ if __name__ == '__main__':
     scorer_group.add_argument('--unnormalized_scorer_embeddings', action='store_true', default=False)
     scorer_group.add_argument('--query_sum_topk', default=None, type=int)
     scorer_group.add_argument('--query_sum_window', default=None, type=int)
+    scorer_group.add_argument('--scorer_agg_fn', default='sum', type=str)
 
     checkpoints_group = parser.add_argument_group(title='paths to various checkpoints')
     checkpoints_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can be from colbert or qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
@@ -1360,6 +1366,12 @@ if __name__ == '__main__':
     logger = CSVLogger(save_dir=args.experiments_directory, name='', version=args.experiment_id)
     checkpoint_callback = ModelCheckpoint(monitor=None, save_top_k=-1)
     normalize_scorer_embeddings=not args.unnormalized_scorer_embeddings
+    if args.scorer_agg_fn == 'sum':
+        scorer_agg_fn = torch.sum
+    elif args.scorer_agg_fn == 'mean':
+        scorer_agg_fn = torch.mean
+    else:
+        assert args.scorer_agg_fn in {'sum', 'mean'}, 'Unsupported value of argument scorer_agg_fn'
     if args.resume_training_from_checkpoint:
         print("Overriding the model using the checkpoint")
         trainer = Trainer(gpus=args.gpus, logger=logger,
@@ -1415,6 +1427,7 @@ if __name__ == '__main__':
                                                      normalize_scorer_embeddings=normalize_scorer_embeddings, 
                                                      query_sum_topk=args.query_sum_topk, 
                                                      query_sum_window=args.query_sum_window,
+                                                     scorer_agg_fn = scorer_agg_fn,
                                                      )
     elif args.loss_type == 'ELBO':
         #TODO, test if the following are identical
@@ -1434,6 +1447,7 @@ if __name__ == '__main__':
                                                      normalize_scorer_embeddings=normalize_scorer_embeddings,
                                                      query_sum_topk=args.query_sum_topk, 
                                                      query_sum_window=args.query_sum_window,
+                                                     scorer_agg_fn = scorer_agg_fn,
                                                      )
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
@@ -1462,6 +1476,7 @@ if __name__ == '__main__':
                                                      normalize_scorer_embeddings=normalize_scorer_embeddings,
                                                      query_sum_topk=args.query_sum_topk, 
                                                      query_sum_window=args.query_sum_window,
+                                                     scorer_agg_fn = scorer_agg_fn,
                                                      )
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
