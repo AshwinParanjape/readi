@@ -507,6 +507,22 @@ class PosteriorDocumentSampler(DocumentSampler):
 
         return mixed_samples
 
+class PurePosteriorDocumentSampler(DocumentSampler):
+    def __init__(self, n, temperature=1, top_k=None):
+        self.n = n
+        self.temperature=temperature
+        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        self.top_k = top_k
+        self.q_sampler = SimpleDocumentSampler(self.n, self.temperature, self.top_k)
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
+        q_set = retrievals[(retrievals['score_q'].notna())].copy()
+        q_set['score'] = q_set['score_q']
+        q_samples = self.q_sampler(q_set)
+
+        return q_samples
+
 class PosteriorTopKDocumentSampler(DocumentSampler):
     def __init__(self, k):
         self.k = k
@@ -1525,13 +1541,14 @@ if __name__ == '__main__':
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
                                   yield_scores=secondary_training)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
-                                args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
-                                yield_scores = secondary_training)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid,
+                                                temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
+                               worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler', 'PurePosteriorDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
@@ -1542,6 +1559,8 @@ if __name__ == '__main__':
             doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         elif args.doc_sampler == 'PosteriorTopKDocumentSampler':
             doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
+        elif args.doc_sampler == 'PurePosteriorDocumentSampler':
+            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         else:
             assert False
 
