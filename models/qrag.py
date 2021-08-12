@@ -848,13 +848,14 @@ class ELBO():
                 ('nll.tsv', self.lm_nll)]
 
 class ELBOFn(torch.nn.Module):
-    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False):
+    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False, add_p_scores_to_q=False):
         super().__init__()
         self.p_scorer = p_scorer
         self.q_scorer = q_scorer
         self.generator = generator
         self.generator_nll = LM_NLL(self.generator)
         self.invert_st_order=invert_st_order
+        self.add_p_scores_to_q=add_p_scores_to_q
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
         if self.invert_st_order:
@@ -865,6 +866,8 @@ class ELBOFn(torch.nn.Module):
         p_probs = stable_softmax(p_scores, dim=1)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
         q_scores = self.q_scorer(st_text, batched_docs)
+        if self.add_p_scores_to_q:
+            q_scores = q_scores+p_scores
         q_probs = stable_softmax(q_scores, dim=1)
         q_log_probs = torch.nn.functional.log_softmax(q_scores, dim=1)
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
@@ -1025,7 +1028,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, add_p_scores_to_q=False):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -1056,6 +1059,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
             self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.invert_st_order = invert_st_order
+        self.add_p_scores_to_q = add_p_scores_to_q
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
@@ -1075,7 +1079,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def set_loss_fn(self):
         if self.invert_st_order:
             print("Using inverted ST order: target | source for the Q retriever")
-        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order)
+        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order, self.add_p_scores_to_q)
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint, generator_checkpoint):
@@ -1310,6 +1314,7 @@ if __name__ == '__main__':
     scorer_group.add_argument('--query_sum_topk', default=None, type=int)
     scorer_group.add_argument('--query_sum_window', default=None, type=int)
     scorer_group.add_argument('--scorer_agg_fn', default='sum', type=str)
+    scorer_group.add_argument('--add_p_scores_to_q', default=False, action='store_true')
 
     checkpoints_group = parser.add_argument_group(title='paths to various checkpoints')
     checkpoints_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can be from colbert or qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
@@ -1420,6 +1425,7 @@ if __name__ == '__main__':
                           default_root_dir=curexpdir, 
                           accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
 
+    if args.add_p_scores_to_q: assert args.loss_type == 'ELBO'
     # Create models
     if args.loss_type == 'NLL':
         # Still old style
@@ -1464,6 +1470,7 @@ if __name__ == '__main__':
                                                      query_sum_topk=args.query_sum_topk, 
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
+                                                     add_p_scores_to_q = args.add_p_scores_to_q,
                                                      )
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
