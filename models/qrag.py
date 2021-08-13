@@ -1572,13 +1572,15 @@ if __name__ == '__main__':
                                 yield_scores = secondary_training, include_unrelated=False)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'RankPNDocumentSampler':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PosteriorDocumentSampler':
             doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+        elif args.doc_sampler == 'PurePosteriorDocumentSampler':
+            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         else:
             assert False
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
