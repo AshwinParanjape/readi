@@ -1578,9 +1578,9 @@ if __name__ == '__main__':
         elif args.doc_sampler == 'RankPNDocumentSampler':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PosteriorDocumentSampler':
-            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
         elif args.doc_sampler == 'PurePosteriorDocumentSampler':
-            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         else:
             assert False
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
@@ -1602,11 +1602,11 @@ if __name__ == '__main__':
         elif args.doc_sampler == 'RankPNDocumentSampler':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PosteriorDocumentSampler':
-            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train,  temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'PosteriorTopKDocumentSampler':
             doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PurePosteriorDocumentSampler':
-            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
         else:
             assert False
 
