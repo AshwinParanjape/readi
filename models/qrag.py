@@ -1551,7 +1551,7 @@ if __name__ == '__main__':
         assert args.doc_sampler in {'SimpleDocumentSampler', 'TopKDocumentSampler'}
         if args.doc_sampler == 'SimpleDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-            val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, top_k=args.docs_top_k)
         elif args.doc_sampler == 'TopKDocumentSampler':
             doc_sampler = TopKDocumentSampler(args.n_sampled_docs_train)
             val_doc_sampler = TopKDocumentSampler(args.n_sampled_docs_valid)
@@ -1587,8 +1587,7 @@ if __name__ == '__main__':
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
                                   yield_scores=secondary_training)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid,
-                                                temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, top_k=args.docs_top_k)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
                                worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
@@ -1614,8 +1613,7 @@ if __name__ == '__main__':
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
                                   yield_scores=secondary_training)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid,
-                                                temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, top_k=args.docs_top_k)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
                                worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
