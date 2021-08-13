@@ -1278,7 +1278,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         state_dict = {'p_scorer.'+k: v for k, v in p_scorer_checkpoint.items()}
         if q_scorer_checkpoint:
             q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
-            state_dict.update({'q_scorer.'+k: v for k, v in q_scorer_checkpoint.items()})
+            state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
         return state_dict
 
     @staticmethod
