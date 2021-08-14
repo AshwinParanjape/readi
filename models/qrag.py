@@ -329,7 +329,7 @@ class SimpleDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
 
     def __call__(self, retrievals: pd.DataFrame):
@@ -351,7 +351,7 @@ class GuidedNoIntersectionDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
         self.p_minus_q_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
         self.q_minus_p_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
@@ -432,7 +432,7 @@ class GuidedDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
         self.p_intersection_q_sampler = SimpleDocumentSampler(self.n//4, self.temperature, self.top_k)
         self.p_minus_q_sampler = SimpleDocumentSampler(self.n//4, self.temperature, self.top_k)
@@ -478,7 +478,7 @@ class PosteriorDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
         self.p_intersection_q_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
         self.q_minus_p_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
@@ -511,7 +511,7 @@ class PurePosteriorDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
         self.q_sampler = SimpleDocumentSampler(self.n, self.temperature, self.top_k)
 
