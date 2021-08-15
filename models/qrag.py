@@ -1229,9 +1229,7 @@ class KLDivergenceFn(torch.nn.Module):
             else:
                 st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
             q_scores = self.q_scorer(st_text, batched_docs)
-            print("Recomputed scores")
         else:
-            print("Precomputed scores")
         q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
         p_scores = self.p_scorer(sources, batched_docs)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
