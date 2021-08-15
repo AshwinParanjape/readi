@@ -1258,6 +1258,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
                                                       query_sum_window = query_sum_window, 
                                                       agg_fn=scorer_agg_fn,
                                                       )
+        self.q_scorer.eval()
         self.loss_fn_constructor = loss_fn
         self.set_loss_fn()
         self.lr = lr
@@ -1289,6 +1290,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        self.q_scorer.eval()
         if self.use_precomputed_scores:
             output: KLDivergence = self.loss_fn(batch['source'], batch['doc_texts'], q_scores=batch['doc_scores'])
         else:
