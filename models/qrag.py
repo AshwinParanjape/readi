@@ -848,7 +848,7 @@ class ELBO():
                 ('nll.tsv', self.lm_nll)]
 
 class ELBOFn(torch.nn.Module):
-    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False, add_p_scores_to_q=False):
+    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False, add_p_scores_to_q=False, KLD_weight=1):
         super().__init__()
         self.p_scorer = p_scorer
         self.q_scorer = q_scorer
@@ -856,6 +856,7 @@ class ELBOFn(torch.nn.Module):
         self.generator_nll = LM_NLL(self.generator)
         self.invert_st_order=invert_st_order
         self.add_p_scores_to_q=add_p_scores_to_q
+        self.KLD_weight = KLD_weight
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
         if self.invert_st_order:
@@ -876,7 +877,7 @@ class ELBOFn(torch.nn.Module):
 
         reconstruction_score = (q_probs * generator_log_prob).sum()
         kl_regularization = (q_probs * (q_log_probs - p_log_probs)).sum()
-        elbo_loss = -(reconstruction_score - kl_regularization)
+        elbo_loss = -(reconstruction_score - self.KLD_weight*kl_regularization)
 
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
 
@@ -1028,7 +1029,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, add_p_scores_to_q=False):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, add_p_scores_to_q=False, KLD_weight=1):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -1060,6 +1061,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.invert_st_order = invert_st_order
         self.add_p_scores_to_q = add_p_scores_to_q
+        self.KLD_weight=KLD_weight
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
@@ -1079,7 +1081,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def set_loss_fn(self):
         if self.invert_st_order:
             print("Using inverted ST order: target | source for the Q retriever")
-        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order, self.add_p_scores_to_q)
+        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order, self.add_p_scores_to_q, self.KLD_weight)
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint, generator_checkpoint):
@@ -1398,6 +1400,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
     training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
+    training_args_group.add_argument('--KLD_weight', type=float, default=1, help='Weight assigned to KLD loss')
 
 
     Experiment.add_argument_group(parser)
@@ -1504,6 +1507,7 @@ if __name__ == '__main__':
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
                                                      add_p_scores_to_q = args.add_p_scores_to_q,
+                                                     KLD_weight=args.KLD_weight,
                                                      )
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
