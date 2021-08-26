@@ -329,7 +329,7 @@ class SimpleDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
 
     def __call__(self, retrievals: pd.DataFrame):
@@ -351,7 +351,7 @@ class GuidedNoIntersectionDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
         self.p_minus_q_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
         self.q_minus_p_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
@@ -432,7 +432,7 @@ class GuidedDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
         self.p_intersection_q_sampler = SimpleDocumentSampler(self.n//4, self.temperature, self.top_k)
         self.p_minus_q_sampler = SimpleDocumentSampler(self.n//4, self.temperature, self.top_k)
@@ -478,7 +478,7 @@ class PosteriorDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
         self.temperature=temperature
-        assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
         self.top_k = top_k
         self.p_intersection_q_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
         self.q_minus_p_sampler = SimpleDocumentSampler(self.n//2, self.temperature, self.top_k)
@@ -506,6 +506,22 @@ class PosteriorDocumentSampler(DocumentSampler):
             mixed_samples = pd.concat([p_intersection_q_samples, q_minus_p_samples, extra_samples])
 
         return mixed_samples
+
+class PurePosteriorDocumentSampler(DocumentSampler):
+    def __init__(self, n, temperature=1, top_k=None):
+        self.n = n
+        self.temperature=temperature
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        self.top_k = top_k
+        self.q_sampler = SimpleDocumentSampler(self.n, self.temperature, self.top_k)
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
+        q_set = retrievals[(retrievals['score_q'].notna())].copy()
+        q_set['score'] = q_set['score_q']
+        q_samples = self.q_sampler(q_set)
+
+        return q_samples
 
 class PosteriorTopKDocumentSampler(DocumentSampler):
     def __init__(self, k):
@@ -832,13 +848,15 @@ class ELBO():
                 ('nll.tsv', self.lm_nll)]
 
 class ELBOFn(torch.nn.Module):
-    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False):
+    def __init__(self, p_scorer:ColBERTScorer, q_scorer: ColBERTScorer, generator: Generator, invert_st_order=False, add_p_scores_to_q=False, KLD_weight=1):
         super().__init__()
         self.p_scorer = p_scorer
         self.q_scorer = q_scorer
         self.generator = generator
         self.generator_nll = LM_NLL(self.generator)
         self.invert_st_order=invert_st_order
+        self.add_p_scores_to_q=add_p_scores_to_q
+        self.KLD_weight = KLD_weight
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
         if self.invert_st_order:
@@ -849,6 +867,8 @@ class ELBOFn(torch.nn.Module):
         p_probs = stable_softmax(p_scores, dim=1)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
         q_scores = self.q_scorer(st_text, batched_docs)
+        if self.add_p_scores_to_q:
+            q_scores = q_scores+p_scores
         q_probs = stable_softmax(q_scores, dim=1)
         q_log_probs = torch.nn.functional.log_softmax(q_scores, dim=1)
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
@@ -857,7 +877,7 @@ class ELBOFn(torch.nn.Module):
 
         reconstruction_score = (q_probs * generator_log_prob).sum()
         kl_regularization = (q_probs * (q_log_probs - p_log_probs)).sum()
-        elbo_loss = -(reconstruction_score - kl_regularization)
+        elbo_loss = -(reconstruction_score - self.KLD_weight*kl_regularization)
 
         return ELBO(elbo_loss, reconstruction_score, kl_regularization, marginalized_nll_loss, -generator_log_prob, p_scores, q_scores)
 
@@ -1009,7 +1029,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, add_p_scores_to_q=False, KLD_weight=1):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -1040,6 +1060,8 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             saved_state_dict = torch.load(q_scorer_checkpoint, map_location='cpu')
             self.q_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.invert_st_order = invert_st_order
+        self.add_p_scores_to_q = add_p_scores_to_q
+        self.KLD_weight=KLD_weight
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
@@ -1059,7 +1081,7 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def set_loss_fn(self):
         if self.invert_st_order:
             print("Using inverted ST order: target | source for the Q retriever")
-        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order)
+        self.loss_fn = ELBOFn(self.p_scorer, self.q_scorer, self.generator, self.invert_st_order, self.add_p_scores_to_q, self.KLD_weight)
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint, generator_checkpoint):
@@ -1196,11 +1218,19 @@ class KLDivergence():
         return [('p_scores', self.p_scores), ('q_scores', self.q_scores)]
 
 class KLDivergenceFn(torch.nn.Module):
-    def __init__(self, p_scorer: ColBERTScorer):
+    def __init__(self, p_scorer: ColBERTScorer, q_scorer: ColBERTScorer=None, invert_st_order=False):
         super().__init__()
         self.p_scorer = p_scorer
+        self.q_scorer = q_scorer
+        self.invert_st_order = invert_st_order
 
-    def forward(self, sources: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor):
+    def forward(self, sources: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor=None, targets:List[str]=None):
+        if q_scores is None:
+            if self.invert_st_order:
+                st_text = [t + ' | ' +s for s, t in zip(sources, targets)]
+            else:
+                st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
+            q_scores = self.q_scorer(st_text, batched_docs)
         q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
         p_scores = self.p_scorer(sources, batched_docs)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
@@ -1210,7 +1240,7 @@ class KLDivergenceFn(torch.nn.Module):
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
+    def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, use_precomputed_scores=True):
         super().__init__()
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
@@ -1221,35 +1251,60 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
                                                       query_sum_window = query_sum_window, 
                                                       agg_fn=scorer_agg_fn,
                                                       )
+        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                                      truncate_query_from_start = truncate_query_from_start,
+                                                      query_maxlen=query_maxlen,
+                                                      doc_maxlen=doc_maxlen, 
+                                                      normalize_embeddings=normalize_scorer_embeddings,
+                                                      query_sum_topk = query_sum_topk, 
+                                                      query_sum_window = query_sum_window, 
+                                                      agg_fn=scorer_agg_fn,
+                                                      )
+        self.q_scorer.eval()
         self.loss_fn_constructor = loss_fn
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
+        self.use_precomputed_scores = use_precomputed_scores
+        print('use_precomputed_scores=',self.use_precomputed_scores) 
 
     def set_loss_fn(self):
-        self.loss_fn = self.loss_fn_constructor(self.p_scorer)
+        self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer)
 
 
     @staticmethod
-    def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint):
+    def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint=None):
         p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
         state_dict = {'p_scorer.'+k: v for k, v in p_scorer_checkpoint.items()}
+        if q_scorer_checkpoint:
+            q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
         return state_dict
 
     @staticmethod
-    def extract_state_dict_from_checkpoints(p_scorer_checkpoint):
+    def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint=None):
         p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
         state_dict = filter_state_dict(p_scorer_checkpoint, 'p_scorer')
+        if q_scorer_checkpoint:
+            q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
         return state_dict
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
-        output: KLDivergence = self.loss_fn(batch['source'], batch['doc_texts'], batch['doc_scores'])
+        self.q_scorer.eval()
+        if self.use_precomputed_scores:
+            output: KLDivergence = self.loss_fn(batch['source'], batch['doc_texts'], q_scores=batch['doc_scores'])
+        else:
+            output: KLDivergence = self.loss_fn(batch['source'], batch['doc_texts'], targets=batch['target'])
         self.my_log('train', batch_idx, batch, output)
         return output.loss
 
     def validation_step(self, batch, batch_idx):
-        output: KLDivergence = self.loss_fn(batch['source'],batch['doc_texts'], batch['doc_scores'])
+        if self.use_precomputed_scores:
+            output: KLDivergence = self.loss_fn(batch['source'], batch['doc_texts'], q_scores=batch['doc_scores'])
+        else:
+            output: KLDivergence = self.loss_fn(batch['source'], batch['doc_texts'], targets=batch['target'])
         self.my_log('val', batch_idx, batch, output)
         return output.loss
 
@@ -1273,7 +1328,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.p_scorer.parameters(), lr=self.lr)
         return optimizer
 
 def filter_state_dict(ckpt, key):
@@ -1294,6 +1349,7 @@ if __name__ == '__main__':
     scorer_group.add_argument('--query_sum_topk', default=None, type=int)
     scorer_group.add_argument('--query_sum_window', default=None, type=int)
     scorer_group.add_argument('--scorer_agg_fn', default='sum', type=str)
+    scorer_group.add_argument('--add_p_scores_to_q', default=False, action='store_true')
 
     checkpoints_group = parser.add_argument_group(title='paths to various checkpoints')
     checkpoints_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can be from colbert or qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
@@ -1344,6 +1400,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
     training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
+    training_args_group.add_argument('--KLD_weight', type=float, default=1, help='Weight assigned to KLD loss')
 
 
     Experiment.add_argument_group(parser)
@@ -1404,6 +1461,7 @@ if __name__ == '__main__':
                           default_root_dir=curexpdir, 
                           accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
 
+    if args.add_p_scores_to_q: assert args.loss_type == 'ELBO'
     # Create models
     if args.loss_type == 'NLL':
         # Still old style
@@ -1448,6 +1506,8 @@ if __name__ == '__main__':
                                                      query_sum_topk=args.query_sum_topk, 
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
+                                                     add_p_scores_to_q = args.add_p_scores_to_q,
+                                                     KLD_weight=args.KLD_weight,
                                                      )
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
@@ -1466,10 +1526,12 @@ if __name__ == '__main__':
             raise False
         if args.scorer_checkpoint_type == 'qtraining':
             state_dict = OnlyRetrieverTraining.extract_state_dict_from_checkpoints(
-                p_scorer_checkpoint=args.p_scorer_checkpoint)
+                p_scorer_checkpoint=args.p_scorer_checkpoint,
+                q_scorer_checkpoint=args.q_scorer_checkpoint)
         else:
             state_dict = OnlyRetrieverTraining.extract_state_dict_from_colbert_checkpoints(
-                p_scorer_checkpoint=args.p_scorer_checkpoint)
+                p_scorer_checkpoint=args.p_scorer_checkpoint,
+                q_scorer_checkpoint=args.q_scorer_checkpoint)
         model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, query_maxlen=args.query_maxlen,
                                                      doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
                                                         truncate_query_from_start=args.truncate_query_from_start, 
@@ -1477,6 +1539,7 @@ if __name__ == '__main__':
                                                      query_sum_topk=args.query_sum_topk, 
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
+                                                     use_precomputed_scores=args.q_scorer_checkpoint is None
                                                      )
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
@@ -1491,7 +1554,7 @@ if __name__ == '__main__':
         assert args.doc_sampler in {'SimpleDocumentSampler', 'TopKDocumentSampler'}
         if args.doc_sampler == 'SimpleDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-            val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         elif args.doc_sampler == 'TopKDocumentSampler':
             doc_sampler = TopKDocumentSampler(args.n_sampled_docs_train)
             val_doc_sampler = TopKDocumentSampler(args.n_sampled_docs_valid)
@@ -1512,26 +1575,28 @@ if __name__ == '__main__':
                                 yield_scores = secondary_training, include_unrelated=False)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'RankPNDocumentSampler':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PosteriorDocumentSampler':
-            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
+        elif args.doc_sampler == 'PurePosteriorDocumentSampler':
+            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         else:
             assert False
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
                                   yield_scores=secondary_training)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
-                                args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
-                                yield_scores = secondary_training)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
+                               worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler', 'PurePosteriorDocumentSampler'}
         if args.doc_sampler == 'GuidedDocumentSampler':
             doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
         elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
@@ -1539,9 +1604,11 @@ if __name__ == '__main__':
         elif args.doc_sampler == 'RankPNDocumentSampler':
             doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
         elif args.doc_sampler == 'PosteriorDocumentSampler':
-            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
+            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train,  temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
         elif args.doc_sampler == 'PosteriorTopKDocumentSampler':
             doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
+        elif args.doc_sampler == 'PurePosteriorDocumentSampler':
+            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
         else:
             assert False
 
@@ -1549,8 +1616,7 @@ if __name__ == '__main__':
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
                                   yield_scores=secondary_training)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid,
-                                                temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
                                worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)

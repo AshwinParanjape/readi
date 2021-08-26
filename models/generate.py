@@ -16,6 +16,7 @@ from transformers import BartForConditionalGeneration, BartTokenizer
 from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem, Generator, ColBERTScorer, \
     NLLLossSystem, TopKDocumentSampler, InheritableCheckpointMixin, filter_state_dict
 
+<<<<<<< HEAD
 class RetrievalScorer(pl.LightningModule):
     def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, normalize_scorer_embeddings=False, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
         super().__init__()
@@ -53,6 +54,8 @@ class RetrievalScorer(pl.LightningModule):
                 overall_doc_idx+=1
             self.instances.append(instance)
         return None
+=======
+>>>>>>> f5f14c891892932a3cfd8a7ed436e7e1a1572edf
 
 class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen=64, doc_maxlen=256, label_maxlen=64, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
@@ -245,37 +248,27 @@ def generate():
         scorer_agg_fn = torch.mean
     else:
         assert args.scorer_agg_fn in {'sum', 'mean'}, 'Unsupported value of argument scorer_agg_fn'
-    if args.n_samples_per_doc == 0:
-        model = RetrievalScorer.load_from_checkpoint(args.p_scorer_checkpoint, strict=False,
-                query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
-                expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start, 
-                normalize_scorer_embeddings = normalize_scorer_embeddings,
-                query_sum_topk=args.query_sum_topk, 
-                query_sum_window=args.query_sum_window,
-                scorer_agg_fn = scorer_agg_fn,
-                )
-    else:
-        state_dict = TargetGenerator.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
-                                                                       generator_checkpoint=args.generator_checkpoint)
-        baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
-        model = TargetGenerator.init_from_checkpoints(state_dict, expdir=curexpdir,
-                query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen,
-                truncate_query_from_start=args.truncate_query_from_start,
-                n_samples_per_doc = args.n_samples_per_doc,
-                baseline_generator=baseline_model.generator,
-                top_k = args.top_k,
-                top_p=args.top_p,
-                temperature = args.temperature,
-                do_sample = args.do_sample,
-                num_beams = args.num_beams,
-                min_length = args.min_length,
-                max_length = args.max_length,
-                normalize_scorer_embeddings = normalize_scorer_embeddings,
-                query_sum_topk=args.query_sum_topk, 
-                query_sum_window=args.query_sum_window,
-                scorer_agg_fn = scorer_agg_fn,
-                )
-        #doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+    state_dict = TargetGenerator.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
+                                                                   generator_checkpoint=args.generator_checkpoint)
+    baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
+    model = TargetGenerator.init_from_checkpoints(state_dict, expdir=curexpdir,
+            query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen,
+            truncate_query_from_start=args.truncate_query_from_start,
+            n_samples_per_doc = args.n_samples_per_doc,
+            baseline_generator=baseline_model.generator,
+            top_k = args.top_k,
+            top_p=args.top_p,
+            temperature = args.temperature,
+            do_sample = args.do_sample,
+            num_beams = args.num_beams,
+            min_length = args.min_length,
+            max_length = args.max_length,
+            normalize_scorer_embeddings = normalize_scorer_embeddings
+            query_sum_topk=args.query_sum_topk, 
+            query_sum_window=args.query_sum_window,
+            scorer_agg_fn = scorer_agg_fn,
+            )
+    #doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
     doc_sampler = TopKDocumentSampler(k=args.n_sampled_docs)
     if args.scorer=='p_scorer':
         val_dataset_scorer = model.p_scorer
