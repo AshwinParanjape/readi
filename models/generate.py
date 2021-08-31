@@ -120,7 +120,7 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
                     instance['retrievals'].append(doc_gens)
                     overall_doc_idx+=1
                 self.instances.append(instance)
-        return generated_output
+        return None
 
 def collate_fn(batch: Dict):
     # Differs from the qrag.collate function in that the doc_scores aren't concatenated as tensors
