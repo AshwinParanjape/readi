@@ -223,7 +223,7 @@ def generate():
             num_beams = args.num_beams,
             min_length = args.min_length,
             max_length = args.max_length,
-            normalize_scorer_embeddings = normalize_scorer_embeddings
+            normalize_scorer_embeddings = normalize_scorer_embeddings,
             query_sum_topk=args.query_sum_topk,
             query_sum_window=args.query_sum_window,
             scorer_agg_fn = scorer_agg_fn,
