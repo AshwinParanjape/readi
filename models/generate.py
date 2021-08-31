@@ -16,46 +16,6 @@ from transformers import BartForConditionalGeneration, BartTokenizer
 from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem, Generator, ColBERTScorer, \
     NLLLossSystem, TopKDocumentSampler, InheritableCheckpointMixin, filter_state_dict
 
-<<<<<<< HEAD
-class RetrievalScorer(pl.LightningModule):
-    def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, normalize_scorer_embeddings=False, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
-        super().__init__()
-        self.expdir = expdir
-        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
-                                                      truncate_query_from_start = truncate_query_from_start,
-                                                      query_maxlen=query_maxlen,
-                                                      doc_maxlen=doc_maxlen,
-                                                      normalize_embeddings=normalize_scorer_embeddings, 
-                                                      query_sum_topk = query_sum_topk, 
-                                                      query_sum_window = query_sum_window, 
-                                                      agg_fn=scorer_agg_fn,
-
-                                                      )
-        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
-                                                      truncate_query_from_start = truncate_query_from_start,
-                                                      query_maxlen=query_maxlen,
-                                                      doc_maxlen=doc_maxlen,
-                                                      normalize_embeddings=normalize_scorer_embeddings,
-                                                      query_sum_topk = query_sum_topk, 
-                                                      query_sum_window = query_sum_window, 
-                                                      agg_fn=scorer_agg_fn,
-                                                      )
-        self.instances = []
-
-    def test_step(self, batch, batch_idx):
-        print(batch, batch_idx)
-        overall_doc_idx = 0
-        sources, targets, batched_docs, batched_doc_scores = batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores']
-        for qid, doc_ids, doc_scores, source, target, docs in zip(batch['qid'], batch['doc_ids'], batched_doc_scores, sources, targets, batched_docs):
-            instance = {'qid': qid.item(), 'source': source, 'target': target, 'retrievals': []}
-            for doc_id, doc, doc_score in zip(doc_ids, docs, doc_scores):
-                doc_gens = {'doc_id': doc_id, 'doc_text': doc, 'doc_score': doc_score, }
-                instance['retrievals'].append(doc_gens)
-                overall_doc_idx+=1
-            self.instances.append(instance)
-        return None
-=======
->>>>>>> f5f14c891892932a3cfd8a7ed436e7e1a1572edf
 
 class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen=64, doc_maxlen=256, label_maxlen=64, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
@@ -76,8 +36,8 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen,
                                           normalize_embeddings=normalize_scorer_embeddings,
-                                          query_sum_topk = query_sum_topk, 
-                                          query_sum_window = query_sum_window, 
+                                          query_sum_topk = query_sum_topk,
+                                          query_sum_window = query_sum_window,
                                           agg_fn=scorer_agg_fn,
                                           )
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
@@ -85,8 +45,8 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen,
                                                       normalize_embeddings=normalize_scorer_embeddings,
-                                                      query_sum_topk = query_sum_topk, 
-                                                      query_sum_window = query_sum_window, 
+                                                      query_sum_topk = query_sum_topk,
+                                                      query_sum_window = query_sum_window,
                                                       agg_fn=scorer_agg_fn,
                                                       )
         self.baseline_generator = baseline_generator
@@ -264,7 +224,7 @@ def generate():
             min_length = args.min_length,
             max_length = args.max_length,
             normalize_scorer_embeddings = normalize_scorer_embeddings
-            query_sum_topk=args.query_sum_topk, 
+            query_sum_topk=args.query_sum_topk,
             query_sum_window=args.query_sum_window,
             scorer_agg_fn = scorer_agg_fn,
             )

@@ -17,20 +17,20 @@ from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem,
     NLLLossSystem, TopKDocumentSampler, InheritableCheckpointMixin, filter_state_dict, collate_fn
 
 class RetrievalScorer(pl.LightningModule):
-    def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, normalize_scorer_embeddings=False, use_scorer='p_scorer', invert_st_order=False):
+    def __init__(self, query_maxlen=64, doc_maxlen=256, expdir='', truncate_query_from_start=False, normalize_scorer_embeddings=False, use_scorer='p_scorer', invert_st_order=False, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum):
         super().__init__()
         self.expdir = expdir
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen,
-                                                      normalize_embeddings=normalize_scorer_embeddings
+                                                      normalize_embeddings=normalize_scorer_embeddings, query_sum_topk = query_sum_topk, query_sum_window = query_sum_window, agg_fn=scorer_agg_fn,
                                                       )
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen,
-                                                      normalize_embeddings=normalize_scorer_embeddings
+                                                      normalize_embeddings=normalize_scorer_embeddings,query_sum_topk = query_sum_topk, query_sum_window = query_sum_window, agg_fn=scorer_agg_fn,
                                                       )
         self.instances = []
         self.invert_st_order = invert_st_order
@@ -43,7 +43,7 @@ class RetrievalScorer(pl.LightningModule):
         sources, targets, batched_docs = batch['source'], batch['target'], batch['doc_texts']
         if self.use_scorer == 'p_scorer':
             batched_doc_scores = self.p_scorer(sources, batched_docs)
-            
+
         elif self.use_scorer == 'q_scorer':
             if self.invert_st_order:
                 st_text = [t + ' | ' +s for s, t in zip(sources, targets)]
@@ -97,16 +97,16 @@ def rescore():
     normalize_scorer_embeddings=not args.unnormalized_scorer_embeddings
     model = RetrievalScorer.load_from_checkpoint(args.scorer_checkpoint, strict=False,
             query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
-            expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start, 
-            normalize_scorer_embeddings = normalize_scorer_embeddings, 
-            use_scorer=args.scorer, 
+            expdir = curexpdir, truncate_query_from_start=args.truncate_query_from_start,
+            normalize_scorer_embeddings = normalize_scorer_embeddings,
+            use_scorer=args.scorer,
             )
 
     doc_sampler = TopKDocumentSampler(k=args.n_sampled_docs)
     val_dataset = PDataset(args.source_path, args.target_path, args.ranked_passages, doc_sampler, worker_id=0, n_workers=1)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     trainer = Trainer(gpus=args.gpus, default_root_dir=curexpdir, limit_test_batches=args.limit_batches)
-    
+
     trainer.test(model, test_dataloaders=val_dataloader)
     with open(Path(curexpdir)/'scores.pkl', 'wb') as f:
         pkl.dump(model.instances, f)
