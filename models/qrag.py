@@ -2,6 +2,7 @@ import gzip
 import io
 import json
 import types
+import itertools
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
@@ -808,17 +809,20 @@ class MarginalizedNLL():
         return [('lm_nll', self.lm_nll), ('p_scores', self.p_scores)]
 
 class MarginalizedNLLFn(torch.nn.Module):
-    def __init__(self, scorer:ColBERTScorer, generator: Generator):
+    def __init__(self, scorer:ColBERTScorer, generator: Generator, fixed_scorer=False):
         super().__init__()
         self.scorer = scorer
         self.generator = generator
         self.generator_nll = LM_NLL(self.generator)
+        self.fixed_scorer=fixed_scorer
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]):
         """
         :return: Marginalized NLL loss
         """
         scores = self.scorer(sources, batched_docs)
+        if self.fixed_scorer:
+            scores = scores.detach()
         doc_log_probs = torch.nn.functional.log_softmax(scores, dim=1) #Shape: n_instances x n_docs
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
         loss = -torch.logsumexp(doc_log_probs + generator_log_prob, dim=1).sum(dim=0)
@@ -968,7 +972,10 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           agg_fn=scorer_agg_fn,
                                           )
         self.fix_scorer = fix_scorer
-        if self.fix_scorer: self.p_scorer.eval()
+        if self.fix_scorer:
+            self.p_scorer.eval()
+            for param in self.p_scorer.parameters():
+                param.requires_grad = False
         #saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
         #self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.set_loss_fn()
@@ -983,20 +990,25 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         return state_dict
 
     def set_loss_fn(self):
-        if self.fix_scorer: self.p_scorer.eval()
-        self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator)
+        if self.fix_scorer:
+            self.p_scorer.eval()
+            print("Fixed p scorer")
+        self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator, self.fix_scorer)
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, generator_checkpoint):
+        state_dict = {}
         p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
-        generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
-        state_dict = filter_state_dict(generator_checkpoint, 'generator')
-        state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
         state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
+        if generator_checkpoint is not None:
+            generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(generator_checkpoint, 'generator'))
+            state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
         return state_dict
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        if self.fix_scorer: self.p_scorer.eval()
         output: MarginalizedNLL = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
 
         log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.loss)
@@ -1009,6 +1021,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def validation_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         output: MarginalizedNLL = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        output: MarginalizedNLL = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
 
         log_value(Path(self.expdir)/ Path('metrics.tsv'), 'val', self.current_epoch, batch_idx, 'loss', output.loss)
 
@@ -1018,7 +1031,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
 
     def configure_optimizers(self):
         if self.fix_scorer:
-            optimizer = torch.optim.Adam(self.generator.parameters(), lr=self.lr)
+            optimizer = torch.optim.Adam(itertools.chain( self._generator.parameters(), self.generator.parameters()), lr=self.lr)
         else:
             optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
