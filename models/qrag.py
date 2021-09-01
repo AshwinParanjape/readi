@@ -950,8 +950,8 @@ class NLLLossSystem(pl.LightningModule):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False, 
-            normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum) :
+    def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False,
+            normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, fix_scorer=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -963,10 +963,12 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen,
                                           normalize_embeddings=normalize_scorer_embeddings,
-                                          query_sum_topk = query_sum_topk, 
-                                          query_sum_window = query_sum_window, 
+                                          query_sum_topk = query_sum_topk,
+                                          query_sum_window = query_sum_window,
                                           agg_fn=scorer_agg_fn,
                                           )
+        self.fix_scorer = fix_scorer
+        if self.fix_scorer: self.p_scorer.eval()
         #saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
         #self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.set_loss_fn()
@@ -981,6 +983,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         return state_dict
 
     def set_loss_fn(self):
+        if self.fix_scorer: self.p_scorer.eval()
         self.loss_fn = MarginalizedNLLFn(self.p_scorer, self.generator)
 
     @staticmethod
@@ -1014,7 +1017,10 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         return output.loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        if self.fix_scorer:
+            optimizer = torch.optim.Adam(self.generator.parameters(), lr=self.lr)
+        else:
+            optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
     def on_train_epoch_start(self):
@@ -1040,8 +1046,8 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings,
-                                          query_sum_topk = query_sum_topk, 
-                                          query_sum_window = query_sum_window, 
+                                          query_sum_topk = query_sum_topk,
+                                          query_sum_window = query_sum_window,
                                           agg_fn=scorer_agg_fn,
                                           )
         if p_scorer_checkpoint:
@@ -1052,8 +1058,8 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings,
-                                          query_sum_topk = query_sum_topk, 
-                                          query_sum_window = query_sum_window, 
+                                          query_sum_topk = query_sum_topk,
+                                          query_sum_window = query_sum_window,
                                           agg_fn=scorer_agg_fn,
                                           )
         if q_scorer_checkpoint:
@@ -1245,19 +1251,19 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
-                                                      doc_maxlen=doc_maxlen, 
+                                                      doc_maxlen=doc_maxlen,
                                                       normalize_embeddings=normalize_scorer_embeddings,
-                                                      query_sum_topk = query_sum_topk, 
-                                                      query_sum_window = query_sum_window, 
+                                                      query_sum_topk = query_sum_topk,
+                                                      query_sum_window = query_sum_window,
                                                       agg_fn=scorer_agg_fn,
                                                       )
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
-                                                      doc_maxlen=doc_maxlen, 
+                                                      doc_maxlen=doc_maxlen,
                                                       normalize_embeddings=normalize_scorer_embeddings,
-                                                      query_sum_topk = query_sum_topk, 
-                                                      query_sum_window = query_sum_window, 
+                                                      query_sum_topk = query_sum_topk,
+                                                      query_sum_window = query_sum_window,
                                                       agg_fn=scorer_agg_fn,
                                                       )
         self.q_scorer.eval()
@@ -1266,7 +1272,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.lr = lr
         self.expdir = expdir
         self.use_precomputed_scores = use_precomputed_scores
-        print('use_precomputed_scores=',self.use_precomputed_scores) 
+        print('use_precomputed_scores=',self.use_precomputed_scores)
 
     def set_loss_fn(self):
         self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer)
@@ -1400,6 +1406,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
     training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
+    training_args_group.add_argument('--fix_p_scorer', action='store_true', default=False, help='When true, p_scorer is kept fixed')
     training_args_group.add_argument('--KLD_weight', type=float, default=1, help='Weight assigned to KLD loss')
 
 
@@ -1458,7 +1465,7 @@ if __name__ == '__main__':
 
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger, track_grad_norm=args.track_grad_norm, gradient_clip_val=args.gradient_clip_val,
-                          default_root_dir=curexpdir, 
+                          default_root_dir=curexpdir,
                           accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
 
     if args.add_p_scores_to_q: assert args.loss_type == 'ELBO'
@@ -1481,11 +1488,12 @@ if __name__ == '__main__':
             assert False
         model = MarginalizedLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen,
                                                      doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, expdir=curexpdir, lr=args.lr,
-                                                     truncate_query_from_start=args.truncate_query_from_start, 
-                                                     normalize_scorer_embeddings=normalize_scorer_embeddings, 
-                                                     query_sum_topk=args.query_sum_topk, 
+                                                     truncate_query_from_start=args.truncate_query_from_start,
+                                                     normalize_scorer_embeddings=normalize_scorer_embeddings,
+                                                     query_sum_topk=args.query_sum_topk,
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
+                                                     fix_scorer=args.fix_p_scorer,
                                                      )
     elif args.loss_type == 'ELBO':
         #TODO, test if the following are identical
@@ -1499,11 +1507,11 @@ if __name__ == '__main__':
         else:
             assert False
 
-        model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, 
+        model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen,
                                                      expdir=curexpdir, lr=args.lr,
                                                      truncate_query_from_start=args.truncate_query_from_start, invert_st_order=args.invert_st_order,
                                                      normalize_scorer_embeddings=normalize_scorer_embeddings,
-                                                     query_sum_topk=args.query_sum_topk, 
+                                                     query_sum_topk=args.query_sum_topk,
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
                                                      add_p_scores_to_q = args.add_p_scores_to_q,
@@ -1512,10 +1520,10 @@ if __name__ == '__main__':
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
             state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
-            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, 
+            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                     label_maxlen=args.label_maxlen, expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
         else:
-            model = OnlyGeneratorTraining(query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, 
+            model = OnlyGeneratorTraining(query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                     label_maxlen=args.label_maxlen,expdir=curexpdir, lr=args.lr, truncate_query_from_start=args.truncate_query_from_start )
     elif args.loss_type == 'KLD' or args.loss_type=='PosNeg':
         if args.loss_type == 'KLD':
@@ -1534,9 +1542,9 @@ if __name__ == '__main__':
                 q_scorer_checkpoint=args.q_scorer_checkpoint)
         model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, loss_fn=loss_fn, query_maxlen=args.query_maxlen,
                                                      doc_maxlen=args.doc_maxlen, expdir=curexpdir, lr=args.lr,
-                                                        truncate_query_from_start=args.truncate_query_from_start, 
+                                                        truncate_query_from_start=args.truncate_query_from_start,
                                                      normalize_scorer_embeddings=normalize_scorer_embeddings,
-                                                     query_sum_topk=args.query_sum_topk, 
+                                                     query_sum_topk=args.query_sum_topk,
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
                                                      use_precomputed_scores=args.q_scorer_checkpoint is None
