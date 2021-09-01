@@ -775,10 +775,121 @@ class Generator(torch.nn.Module):
         #generator_seq_ll = generator_ll.sum(dim=1)
         return rescorer_seq_ll
 
+class FiDGenerator(torch.nn.Module):
+    def __init__(self, generator, tokenizer, input_maxlen=256, output_maxlen=64):
+        super().__init__()
+        self.generator = generator
+        self.tokenizer = tokenizer
+        self.input_maxlen=input_maxlen
+        self.output_maxlen=output_maxlen
+
+    def prepare_generator_inputs(self, sources, batched_docs):
+        assert len(set(len(x) for x in batched_docs)) == 1, "Number of docs should not vary across sources"
+        generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in
+                                docs]
+
+        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True,
+                                                       max_length=self.input_maxlen, pad_to_multiple_of=8)
+        input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in
+                               input_encoding.data.items()}
+        input_encoding.n_sources = len(sources)
+        input_encoding.n_docs_per_source = len(batched_docs[0])
+        return input_encoding
+
+    def prepare_training_inputs(self, sources, targets, batched_docs):
+        assert len(set(len(x) for x in batched_docs)) == 1, "Number of docs should not vary across sources"
+        generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in docs]
+        generator_outputs = [f'{target}' for target in targets]
+
+        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True, max_length=self.input_maxlen, pad_to_multiple_of=8)
+        input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in input_encoding.data.items()}
+        input_encoding.n_sources = len(sources)
+        input_encoding.n_docs_per_source = len(batched_docs[0])
+
+
+        output_encoding: BatchEncoding = self.tokenizer(generator_outputs, padding=True, return_tensors='pt', truncation=True, max_length=self.output_maxlen, pad_to_multiple_of=8)
+        output_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in output_encoding.data.items()}
+        return input_encoding, output_encoding
+
+
+    def encode_and_concatenate(self, input_encoding, **kwargs):
+        encoder_outputs = self.generator.model.encoder(input_encoding['input_ids'], input_encoding['attention_mask'],**kwargs)
+        eo_shape = encoder_outputs[0].shape
+        print(encoder_outputs[0].shape)
+        print(encoder_outputs[0])
+
+        encoder_outputs = (encoder_outputs[0].view(input_encoding.n_sources, input_encoding.n_docs_per_source*eo_shape[1], eo_shape[2]), ) + encoder_outputs[1:]
+        print(encoder_outputs[0].shape)
+        print(encoder_outputs[0])
+        return encoder_outputs
+
+    def get_target_logits(self, encoder_outputs, output_encoding):
+        lm_output : Seq2SeqLMOutput = self.generator(
+            encoder_outputs = encoder_outputs,
+            labels = output_encoding['input_ids'],
+            return_dict=True
+        )
+        return lm_output
+
+    def forward(self, sources, targets, batched_docs=None):
+        input_encoding, output_encoding = self.prepare_training_inputs(sources, targets, batched_docs)
+        encoder_outputs = self.encode_and_concatenate(input_encoding)
+        lm_output = self.get_target_logits(encoder_outputs, output_encoding)
+        lm_output.input_encoding = input_encoding
+        lm_output.output_encoding = output_encoding
+        return lm_output
+
+
+    def generate(self, sources, batched_docs=None, **generation_kwargs)->ModelOutput:
+        input_encoding = self.prepare_generator_inputs(sources, batched_docs)
+        encoder_outputs = self.encode_and_concatenate(input_encoding)
+        generator_output = self.generator.generate(encoder_outputs=encoder_outputs,
+                                        return_dict_in_generate=True,
+                                        **generation_kwargs)
+        # Use the following to generate based on pure sampling and verify that the same probabilities are computed by
+        # the rescorer as well
+        #generator_output = self.generator.generate(input_ids=input_encoding['input_ids'],
+        #                                                    attention_mask=input_encoding['attention_mask'],
+        #                                                    return_dict_in_generate=True, output_scores=True, do_sample=True, num_beams=1,
+        #                                                    no_repeat_ngram_size=0,
+        #                                                    min_length=-1,
+        #                                                    forced_eos_token_id=None,
+        #                                                    top_k=0,
+        #                                                    **generation_kwargs)
+
+        # Warning: I have not manually checked the correctness of log_liklihood values the case of FiD
+        generator_output.log_liklihood = self.rescore_from_tensors(input_encoding, generator_output, generation_kwargs.get('num_return_sequences', 1))
+        decoded_output = self.tokenizer.batch_decode(generator_output.sequences, skip_special_tokens=True)
+        generator_output.strings = decoded_output
+        generator_output.input_encoding = input_encoding
+        return generator_output
+
+    def rescore_from_tensors(self, encoder_outputs, generator_output, n_samples_per_doc):
+        """
+        This function computes the raw probabilities as assigned by the generator (tested with BartForConditionalGeneration)
+        This is useful because the scores returned by generate are affected by warping and beam search, also useful
+        for rescoring with another model that wasn't use to generate the sequences
+        """
+        # Warning: Following code is untested for accuracy
+        rescorer_output = self.generator(encoder_output=encoder_outputs.repeat_interleave(repeats=n_samples_per_doc, dim=0),
+                                         decoder_input_ids=generator_output.sequences[:, :-1])
+        rescorer_log_softmax=torch.log_softmax(rescorer_output.logits, dim=2)
+        not_pad = generator_output.sequences[:, 1:-1]!=self.generator.config.pad_token_id
+        rescorer_ll = not_pad * rescorer_log_softmax.gather(dim=2, index=generator_output.sequences[:, 1:-1].unsqueeze(2)).squeeze(2)
+        rescorer_seq_ll = rescorer_ll.sum(dim=1)
+
+        # To verify if the rescorer probs are correct, do pure sampling in the generator (uncomment lines in generate
+        # function) and uncomment the following lines to get generator scores in the same form as rescorer_seq_ll
+        #generator_log_softmax=torch.log_softmax(torch.stack(generator_output.scores).permute(1,0,2), dim=2)
+        #generator_ll = not_pad * generator_log_softmax[:, :-1, :].gather(dim=2, index=generator_output.sequences[:, 1:-1].unsqueeze(2)).squeeze(2)
+        #generator_seq_ll = generator_ll.sum(dim=1)
+        return rescorer_seq_ll
+
 
 class LM_NLL(torch.nn.Module):
-    def __init__(self, generator: Generator):
+    def __init__(self, generator: Generator, FiD=False):
         super().__init__()
+        self.FiD = FiD
         self.generator = generator
 
     def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]]=None):
@@ -790,7 +901,7 @@ class LM_NLL(torch.nn.Module):
         logits = lm_output.logits #Shape: Bsz*nd x len x vocab_size
         logits = logits.permute(1,2,0) #Shape: (len-1) x vocab_size x Bsz*nd
         nll = torch.nn.functional.cross_entropy(logits, labels, reduction='none').sum(dim=0) # Shape: Bsz*nd
-        if batched_docs:
+        if batched_docs and not self.FiD:
             bsz = len(batched_docs)
             nd = len(batched_docs[0])
             nll = nll.view(bsz, nd)
@@ -1044,6 +1155,79 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tq_id\tdoc_id\tp_score\n')
         with open(Path(self.expdir) / Path(f'nll_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tq_id\tdoc_id\tnll\n')
+        with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
+            f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
+
+class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
+    def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False,
+            normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum) :
+        super().__init__()
+        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
+        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        self.generator = FiDGenerator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+                                          truncate_query_from_start = truncate_query_from_start,
+                                          query_maxlen=query_maxlen,
+                                          doc_maxlen=doc_maxlen,
+                                          normalize_embeddings=normalize_scorer_embeddings,
+                                          query_sum_topk = query_sum_topk,
+                                          query_sum_window = query_sum_window,
+                                          agg_fn=scorer_agg_fn,
+                                          )
+        self.p_scorer.eval()
+        for param in self.p_scorer.parameters():
+            param.requires_grad = False
+        #saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
+        #self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
+        self.set_loss_fn()
+
+        self.expdir = expdir
+        self.lr = lr
+
+    @staticmethod
+    def extract_state_dict_from_colbert_checkpoints(p_scorer_checkpoint):
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        state_dict = {'p_scorer.'+k: v for k, v in p_scorer_checkpoint.items()}
+        return state_dict
+
+    def set_loss_fn(self):
+        self.p_scorer.eval()
+        self.loss_fn = LM_NLL(self.generator, FiD=True)
+
+    @staticmethod
+    def extract_state_dict_from_checkpoints(p_scorer_checkpoint, generator_checkpoint):
+        state_dict = {}
+        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+        state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
+        if generator_checkpoint is not None:
+            generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(generator_checkpoint, 'generator'))
+            state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
+        return state_dict
+
+    def training_step(self, batch, batch_idx):
+        # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        self.p_scorer.eval()
+        output  = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.sum())
+        return output.sum()
+
+    def validation_step(self, batch, batch_idx):
+        # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
+        output = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+
+        log_value(Path(self.expdir)/ Path('metrics.tsv'), 'valid', self.current_epoch, batch_idx, 'loss', output.sum())
+
+        return output.sum()
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(itertools.chain( self._generator.parameters(), self.generator.parameters()), lr=self.lr)
+        return optimizer
+
+    def on_train_epoch_start(self):
+        self.setup_tsv_files()
+
+    def setup_tsv_files(self):
         with open(Path(self.expdir) / Path(f'metrics_{self.current_epoch}.tsv'), 'w') as f:
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
@@ -1399,7 +1583,7 @@ if __name__ == '__main__':
     training_args_group = parser.add_argument_group(title='training args')
     training_args_group.add_argument('--batch_size', type=int, default=3, help='training batch size')
     training_args_group.add_argument('--loss_type', type=str,
-                                     help='Training loss to use. Choices: [NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg]')
+                                     help='Training loss to use. Choices: [NLL, FiDNLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg]')
     training_args_group.add_argument('--n_sampled_docs_train', type=int, default=8,
                                      help="Number of docs to sample for each instance (Marginalized, ELBO)")
     training_args_group.add_argument('--n_sampled_docs_valid', type=int, default=100,
@@ -1488,6 +1672,24 @@ if __name__ == '__main__':
         model = NLLLossSystem(lr=args.lr, expdir=curexpdir,
                               truncate_query_from_start=args.truncate_query_from_start, query_maxlen=args.query_maxlen, label_maxlen=args.label_maxlen, )
 
+    elif args.loss_type == 'FiDNLL':
+        if args.scorer_checkpoint_type == 'colbert':
+            state_dict = FiDNLLSystem.extract_state_dict_from_colbert_checkpoints(
+                p_scorer_checkpoint=args.p_scorer_checkpoint)
+        elif args.scorer_checkpoint_type == 'qtraining':
+            state_dict = FiDNLLSystem.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
+                                                                           generator_checkpoint=args.generator_checkpoint)
+        else:
+            assert False
+        model = FiDNLLSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen,
+                                                     doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen, expdir=curexpdir, lr=args.lr,
+                                                     truncate_query_from_start=args.truncate_query_from_start,
+                                                     normalize_scorer_embeddings=normalize_scorer_embeddings,
+                                                     query_sum_topk=args.query_sum_topk,
+                                                     query_sum_window=args.query_sum_window,
+                                                     scorer_agg_fn = scorer_agg_fn,
+                                                     )
+
     elif args.loss_type == 'Marginalized':
         # Still old style loading from checkpoints
         #TODO, test if the following are identical
@@ -1571,7 +1773,7 @@ if __name__ == '__main__':
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
         val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
-    elif args.loss_type == 'Marginalized':
+    elif args.loss_type in {'Marginalized', 'FiDNLL'}:
         assert args.doc_sampler in {'SimpleDocumentSampler', 'TopKDocumentSampler'}
         if args.doc_sampler == 'SimpleDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
