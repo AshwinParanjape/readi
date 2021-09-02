@@ -13,14 +13,14 @@ from meticulous import Experiment
 from torch.utils.data.dataloader import default_collate
 from transformers import BartForConditionalGeneration, BartTokenizer
 
-from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem, Generator, ColBERTScorer, \
+from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem, Generator, FiDGenerator, ColBERTScorer, \
     NLLLossSystem, TopKDocumentSampler, InheritableCheckpointMixin, filter_state_dict
 
 
 class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen=64, doc_maxlen=256, label_maxlen=64, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
             baseline_generator: Generator=None, normalize_scorer_embeddings=False,
-            query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum,
+            query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, FiD=False,
                  **generation_kwargs, ):
         super().__init__()
         self.n_samples_per_doc = n_samples_per_doc
@@ -30,7 +30,10 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+        if FiD:
+            self.generator = FiDGenerator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+        else:
+            self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -49,6 +52,7 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
                                                       query_sum_window = query_sum_window,
                                                       agg_fn=scorer_agg_fn,
                                                       )
+        self.FiD = FiD
         self.baseline_generator = baseline_generator
         self.instances = []
         #with open(Path(self.expdir)/ Path('generations.tsv'), 'w') as f:
@@ -104,21 +108,23 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
                                                            (overall_doc_idx+1)*self.n_samples_per_doc, :]
                     strings = generated_output.strings[overall_doc_idx*self.n_samples_per_doc:
                                                            (overall_doc_idx+1)*self.n_samples_per_doc]
-                    log_liklihood = generated_output.log_liklihood[overall_doc_idx*self.n_samples_per_doc:
-                                                           (overall_doc_idx+1)*self.n_samples_per_doc]
-                    baseline_log_liklihood = generated_output.baseline_log_liklihood[overall_doc_idx*self.n_samples_per_doc:
-                                                                   (overall_doc_idx+1)*self.n_samples_per_doc]
+                    #log_liklihood = generated_output.log_liklihood[overall_doc_idx*self.n_samples_per_doc:
+                    #                                       (overall_doc_idx+1)*self.n_samples_per_doc]
+                    #baseline_log_liklihood = generated_output.baseline_log_liklihood[overall_doc_idx*self.n_samples_per_doc:
+                    #                                               (overall_doc_idx+1)*self.n_samples_per_doc]
                     doc_gens['generator_output'] = {
                         'input_ids': input_ids.tolist(),
                         'attention_mask': attention_mask.tolist(),
                         'sequences': sequences.tolist(),
                         'strings': strings,
-                        'log_liklihood': log_liklihood.tolist(),
-                        'baseline_log_liklihood': baseline_log_liklihood.tolist(),
+                        #'log_liklihood': log_liklihood.tolist(),
+                        #'baseline_log_liklihood': baseline_log_liklihood.tolist(),
                     }
 
                     instance['retrievals'].append(doc_gens)
                     overall_doc_idx+=1
+                    if self.FiD:
+                        break
                 self.instances.append(instance)
         return None
 
@@ -187,6 +193,8 @@ def generate():
     decoding_group.add_argument('--limit_batches', type=int, default=1.0, help="Limit number of batches")
     decoding_group.add_argument('--scorer', type=str, default='p_scorer', help='Use a specific scorer (p_scorer, q_scorer)')
     decoding_group.add_argument('--gpus', type=int, default=1, help='number of gpus')
+    decoding_group.add_argument('--FiD',  default=False, action='store_true',
+                                help="If set, the generator is assumed to use all docs at once")
 
     Experiment.add_argument_group(parser)
     args = parser.parse_args()
@@ -210,12 +218,15 @@ def generate():
         assert args.scorer_agg_fn in {'sum', 'mean'}, 'Unsupported value of argument scorer_agg_fn'
     state_dict = TargetGenerator.extract_state_dict_from_checkpoints(p_scorer_checkpoint=args.p_scorer_checkpoint,
                                                                    generator_checkpoint=args.generator_checkpoint)
-    baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
+    if args.no_retrieval_checkpoint:
+        baseline_model = NLLLossSystem.load_from_checkpoint(args.no_retrieval_checkpoint, strict=False)
+    else:
+        baseline_model = None
     model = TargetGenerator.init_from_checkpoints(state_dict, expdir=curexpdir,
             query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen,
             truncate_query_from_start=args.truncate_query_from_start,
             n_samples_per_doc = args.n_samples_per_doc,
-            baseline_generator=baseline_model.generator,
+            baseline_generator=baseline_model.generator if baseline_model else None,
             top_k = args.top_k,
             top_p=args.top_p,
             temperature = args.temperature,
@@ -227,6 +238,7 @@ def generate():
             query_sum_topk=args.query_sum_topk,
             query_sum_window=args.query_sum_window,
             scorer_agg_fn = scorer_agg_fn,
+            FiD=args.FiD,
             )
     #doc_sampler = SimpleDocumentSampler(args.n_sampled_docs, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
     doc_sampler = TopKDocumentSampler(k=args.n_sampled_docs)

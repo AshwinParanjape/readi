@@ -813,14 +813,9 @@ class FiDGenerator(torch.nn.Module):
 
 
     def encode_and_concatenate(self, input_encoding, **kwargs):
-        encoder_outputs = self.generator.model.encoder(input_encoding['input_ids'], input_encoding['attention_mask'],**kwargs)
-        eo_shape = encoder_outputs[0].shape
-        print(encoder_outputs[0].shape)
-        print(encoder_outputs[0])
-
-        encoder_outputs = (encoder_outputs[0].view(input_encoding.n_sources, input_encoding.n_docs_per_source*eo_shape[1], eo_shape[2]), ) + encoder_outputs[1:]
-        print(encoder_outputs[0].shape)
-        print(encoder_outputs[0])
+        encoder_outputs = self.generator.model.encoder(input_encoding['input_ids'], input_encoding['attention_mask'], return_dict=True, **kwargs)
+        eo_shape = encoder_outputs.last_hidden_state.shape
+        encoder_outputs.last_hidden_state = encoder_outputs.last_hidden_state.view(input_encoding.n_sources, input_encoding.n_docs_per_source*eo_shape[1], eo_shape[2])
         return encoder_outputs
 
     def get_target_logits(self, encoder_outputs, output_encoding):
@@ -858,7 +853,7 @@ class FiDGenerator(torch.nn.Module):
         #                                                    **generation_kwargs)
 
         # Warning: I have not manually checked the correctness of log_liklihood values the case of FiD
-        generator_output.log_liklihood = self.rescore_from_tensors(input_encoding, generator_output, generation_kwargs.get('num_return_sequences', 1))
+        #generator_output.log_liklihood = self.rescore_from_tensors(encoder_outputs, generator_output, generation_kwargs.get('num_return_sequences', 1))
         decoded_output = self.tokenizer.batch_decode(generator_output.sequences, skip_special_tokens=True)
         generator_output.strings = decoded_output
         generator_output.input_encoding = input_encoding
@@ -871,7 +866,8 @@ class FiDGenerator(torch.nn.Module):
         for rescoring with another model that wasn't use to generate the sequences
         """
         # Warning: Following code is untested for accuracy
-        rescorer_output = self.generator(encoder_output=encoder_outputs.repeat_interleave(repeats=n_samples_per_doc, dim=0),
+        encoder_outputs.last_hidden_state = encoder_outputs.last_hidden_state.repeat_interleave(repeats=n_samples_per_doc, dim=0)
+        rescorer_output = self.generator(encoder_outputs=encoder_outputs,
                                          decoder_input_ids=generator_output.sequences[:, :-1])
         rescorer_log_softmax=torch.log_softmax(rescorer_output.logits, dim=2)
         not_pad = generator_output.sequences[:, 1:-1]!=self.generator.config.pad_token_id
