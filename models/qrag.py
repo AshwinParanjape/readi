@@ -1278,7 +1278,10 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
-        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+        p_scorer_config = ColBERTScorer.from_pretrained('bert-base-uncased')
+        p_scorer_config.hidden_dropout_prob = 0.2
+        p_scorer_config.attention_dropout_prob = 0.2
+        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased', config=p_scorer_config,
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
                                           doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings,
@@ -1286,11 +1289,13 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
                                           query_sum_window = query_sum_window,
                                           agg_fn=scorer_agg_fn,
                                           )
+        print(self.p_scorer)
         if p_scorer_checkpoint:
             saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
             self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
 
 
+        
         self.q_scorer = q_scorer_class.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
