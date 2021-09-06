@@ -14,7 +14,7 @@ from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.profiler import AdvancedProfiler
 from torch.utils.data import DataLoader
 from transformers import BartForConditionalGeneration, BartTokenizer, BertPreTrainedModel, BertModel, BertTokenizerFast, \
-    BatchEncoding
+    BatchEncoding, BertForSequenceClassification, BertTokenizer
 from transformers.file_utils import ModelOutput
 from transformers.modeling_outputs import Seq2SeqLMOutput
 import string
@@ -227,6 +227,41 @@ class ColBERT(BertPreTrainedModel):
     def mask(self, input_ids):
         mask = [[(x not in self.skiplist) and (x != 0) for x in d] for d in input_ids.cpu().tolist()]
         return mask
+
+class BERTScorer(BertForSequenceClassification):
+    def __init__(self, config, query_maxlen, doc_maxlen, truncate_query_from_start=False, **kwargs):
+        super().__init__(config)
+        self.query_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        if truncate_query_from_start:
+            self.query_tokenizer.truncate_sequences = types.MethodType(truncate_sequences_from_beginning_helper, self.query_tokenizer)
+        self.doc_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', never_split=[f"{DOC_TOKEN}"])
+        self.query_maxlen=query_maxlen
+        self.doc_maxlen=doc_maxlen
+
+
+    def tokenize(self, queries, batched_docs):
+        # Need to tokenize awkwardly
+        # Treat the query differently, truncate from the beginning
+        input_queries = [f'{query}' for query, docs in zip(queries, batched_docs) for doc in docs]
+        input_docs = [f'{DOC_TOKEN} {doc}' for _, docs in zip(queries, batched_docs) for doc in docs]
+        input_queries = [self.query_tokenizer.decode(self.query_tokenizer.encode(query, padding=True,  truncation=True, max_length=self.query_maxlen, add_special_tokens=False)) for query in input_queries]
+        input_docs = [self.doc_tokenizer.decode(self.doc_tokenizer.encode(doc, padding=True,  truncation=True, max_length=self.doc_maxlen-2, add_special_tokens=False)) for doc in input_docs]
+        combined_queries = [q + ' ' + d for q, d in zip(input_queries, input_docs)]
+        input_encoding : BatchEncoding = self.doc_tokenizer(combined_queries, max_length=self.query_maxlen+self.doc_maxlen, padding=True, return_tensors='pt', add_special_tokens=False)
+        input_encoding.data = {n: t.pin_memory().to(device=self.device, non_blocking=True) for n, t in
+                               input_encoding.data.items()}
+
+        return input_encoding
+
+    def forward(self, queries, batched_docs):
+        n_instances = len(batched_docs)
+        n_docs = len(batched_docs[0])
+        input_encoding = self.tokenize(queries, batched_docs)
+        output: SequenceClassfierOutput = super().forward(input_ids=input_encoding['input_ids'],
+                        attention_mask=input_encoding['attention_mask'])
+        logits = output.logits.view(n_instances, n_docs, *output.logits.shape[1:])
+        logits = logits[:, :, 0]
+        return logits
 
 class ClosedSetRetrievals():
     """Iterable Dataset that loads the closed set of retrieved passages in chunks and also works with multiple workers"""
@@ -1228,7 +1263,7 @@ class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, add_p_scores_to_q=False, KLD_weight=1):
+    def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, add_p_scores_to_q=False, KLD_weight=1, q_scorer_class=ColBERTScorer):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -1247,10 +1282,12 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
             self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
 
-        self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+
+        self.q_scorer = q_scorer_class.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
-                                          doc_maxlen=doc_maxlen, normalize_embeddings=normalize_scorer_embeddings,
+                                          doc_maxlen=doc_maxlen,
+                                          normalize_embeddings=normalize_scorer_embeddings,
                                           query_sum_topk = query_sum_topk,
                                           query_sum_window = query_sum_window,
                                           agg_fn=scorer_agg_fn,
@@ -1285,12 +1322,13 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, q_scorer_checkpoint, generator_checkpoint):
         p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
-        q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
         generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
         state_dict = filter_state_dict(generator_checkpoint, 'generator')
         state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
         state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
-        state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
+        if q_scorer_checkpoint is not None:
+            q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
         return state_dict
 
     def training_step(self, batch, batch_idx):
@@ -1549,6 +1587,7 @@ if __name__ == '__main__':
     scorer_group.add_argument('--query_sum_window', default=None, type=int)
     scorer_group.add_argument('--scorer_agg_fn', default='sum', type=str)
     scorer_group.add_argument('--add_p_scores_to_q', default=False, action='store_true')
+    scorer_group.add_argument('--q_scorer_class', type=str, default='ColBERTScorer', help='Scorer class')
 
     checkpoints_group = parser.add_argument_group(title='paths to various checkpoints')
     checkpoints_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can be from colbert or qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
@@ -1718,6 +1757,11 @@ if __name__ == '__main__':
         else:
             assert False
 
+        if args.q_scorer_class == 'ColBERTScorer':
+            q_scorer_class = ColBERTScorer
+        elif args.q_scorer_class == 'BERTScorer':
+            q_scorer_class = BERTScorer
+
         model = ELBOLossSystem.init_from_checkpoints(state_dict, query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen,
                                                      expdir=curexpdir, lr=args.lr,
                                                      truncate_query_from_start=args.truncate_query_from_start, invert_st_order=args.invert_st_order,
@@ -1727,6 +1771,7 @@ if __name__ == '__main__':
                                                      scorer_agg_fn = scorer_agg_fn,
                                                      add_p_scores_to_q = args.add_p_scores_to_q,
                                                      KLD_weight=args.KLD_weight,
+                                                    q_scorer_class = q_scorer_class
                                                      )
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
