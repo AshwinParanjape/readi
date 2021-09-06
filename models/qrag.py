@@ -785,8 +785,7 @@ class FiDGenerator(torch.nn.Module):
 
     def prepare_generator_inputs(self, sources, batched_docs):
         assert len(set(len(x) for x in batched_docs)) == 1, "Number of docs should not vary across sources"
-        generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in
-                                docs]
+        generator_inputs = [f'{idx} {source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for idx, doc in enumerate(docs)]
 
         input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True,
                                                        max_length=self.input_maxlen, pad_to_multiple_of=8)
@@ -798,7 +797,7 @@ class FiDGenerator(torch.nn.Module):
 
     def prepare_training_inputs(self, sources, targets, batched_docs):
         assert len(set(len(x) for x in batched_docs)) == 1, "Number of docs should not vary across sources"
-        generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in docs]
+        generator_inputs = [f'{idx} {source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for idx, doc in enumerate(docs)]
         generator_outputs = [f'{target}' for target in targets]
 
         input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True, max_length=self.input_maxlen, pad_to_multiple_of=8)
@@ -1156,7 +1155,7 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
 
 class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen, label_maxlen=64,expdir='', lr=1e-3, truncate_query_from_start=False,
-            normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum) :
+            normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, rescored_top_k=8) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
@@ -1173,6 +1172,7 @@ class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
         self.p_scorer.eval()
         for param in self.p_scorer.parameters():
             param.requires_grad = False
+        self.rescored_top_k = rescored_top_k
         #saved_state_dict = torch.load(p_scorer_checkpoint, map_location='cpu')
         #self.p_scorer.load_state_dict(saved_state_dict['model_state_dict'], strict=False)
         self.set_loss_fn()
@@ -1204,13 +1204,21 @@ class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
         self.p_scorer.eval()
-        output  = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        scores = self.p_scorer(batch['source'], batch['doc_texts'])
+        sorted_scores, sorted_indices = torch.sort(scores, dim=1, descending=True) # sorts the documents by the scores
+        rescored_doc_texts = [[batch[i] for i in batch_indices[:self.rescored_top_k]] for batch, batch_indices in zip(batch['doc_texts'], sorted_indices)]
+
+        output  = self.loss_fn(batch['source'], batch['target'], rescored_doc_texts)
         log_value(Path(self.expdir)/ Path('metrics.tsv'), 'train', self.current_epoch, batch_idx, 'loss', output.sum())
         return output.sum()
 
     def validation_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
-        output = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
+        scores = self.p_scorer(batch['source'], batch['doc_texts'])
+        sorted_scores, sorted_indices = torch.sort(scores, dim=1, descending=True) # sorts the documents by the scores
+        rescored_doc_texts = [[batch[i] for i in batch_indices[:self.rescored_top_k]] for batch, batch_indices in zip(batch['doc_texts'], sorted_indices)]
+
+        output  = self.loss_fn(batch['source'], batch['target'], rescored_doc_texts)
 
         log_value(Path(self.expdir)/ Path('metrics.tsv'), 'valid', self.current_epoch, batch_idx, 'loss', output.sum())
 
@@ -1601,6 +1609,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
     training_args_group.add_argument('--fix_p_scorer', action='store_true', default=False, help='When true, p_scorer is kept fixed')
     training_args_group.add_argument('--KLD_weight', type=float, default=1, help='Weight assigned to KLD loss')
+    training_args_group.add_argument('--FiD_rescored_top_k', type=int, help="During FiDNLL training, sample n_sampled_docs but then rescore and keep FiD_rescored_top_k documents from that set.")
 
 
     Experiment.add_argument_group(parser)
@@ -1684,6 +1693,7 @@ if __name__ == '__main__':
                                                      query_sum_topk=args.query_sum_topk,
                                                      query_sum_window=args.query_sum_window,
                                                      scorer_agg_fn = scorer_agg_fn,
+                                                     rescored_top_k = args.FiD_rescored_top_k
                                                      )
 
     elif args.loss_type == 'Marginalized':
