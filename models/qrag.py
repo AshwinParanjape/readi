@@ -14,7 +14,7 @@ from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.profiler import AdvancedProfiler
 from torch.utils.data import DataLoader
 from transformers import BartForConditionalGeneration, BartTokenizer, BertPreTrainedModel, BertModel, BertTokenizerFast, \
-    BatchEncoding, BertForSequenceClassification, BertTokenizer
+    BatchEncoding, BertForSequenceClassification, BertTokenizer, BertConfig
 from transformers.file_utils import ModelOutput
 from transformers.modeling_outputs import Seq2SeqLMOutput
 import string
@@ -1492,10 +1492,10 @@ class KLDivergenceFn(torch.nn.Module):
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, loss_fn, query_maxlen, doc_maxlen, expdir='', lr=1e-3, truncate_query_from_start=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, use_precomputed_scores=True):
         super().__init__()
-        p_scorer_config = ColBERTScorer.from_pretrained('bert-base-uncased')
+        p_scorer_config = BertConfig.from_pretrained('bert-base-uncased')
         p_scorer_config.hidden_dropout_prob = 0.2
-        p_scorer_config.attention_dropout_prob = 0.2
-        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased', 
+        p_scorer_config.attention_probs_dropout_prob = 0.2
+        self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased', config=p_scorer_config,
                                                       truncate_query_from_start = truncate_query_from_start,
                                                       query_maxlen=query_maxlen,
                                                       doc_maxlen=doc_maxlen,
@@ -1503,7 +1503,6 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
                                                       query_sum_topk = query_sum_topk,
                                                       query_sum_window = query_sum_window,
                                                       agg_fn=scorer_agg_fn,
-                                                      config=p_scorer_config,
                                                       )
         print(self.p_scorer)
         self.q_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
