@@ -228,18 +228,24 @@ class ColBERT(BertPreTrainedModel):
         mask = [[(x not in self.skiplist) and (x != 0) for x in d] for d in input_ids.cpu().tolist()]
         return mask
 
-class BERTScorer(BertForSequenceClassification):
-    def __init__(self, config, query_maxlen, doc_maxlen, truncate_query_from_start=False, **kwargs):
-        super().__init__(config)
-        self.query_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+class QueryDocTokenizer():
+    def __init__(self, query_tokenizer, doc_tokenizer, query_maxlen, doc_maxlen, truncate_query_from_start=True):
+        self.query_tokenizer = query_tokenizer
+        self.doc_tokenizer = doc_tokenizer
         if truncate_query_from_start:
             self.query_tokenizer.truncate_sequences = types.MethodType(truncate_sequences_from_beginning_helper, self.query_tokenizer)
-        self.doc_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', never_split=[f"{DOC_TOKEN}"])
-        self.query_maxlen=query_maxlen
-        self.doc_maxlen=doc_maxlen
+        self.query_maxlen = query_maxlen
+        self.doc_maxlen = doc_maxlen
+
+    def tokenize_queries(queries):
+        input_queries = [f'{query}' for query in queries]
+        input_queries = [self.query_tokenizer.decode(self.query_tokenizer.encode(query, padding=True,  truncation=True, max_length=self.query_maxlen, add_special_tokens=False)) for query in input_queries]
+        input_encoding : BatchEncoding = self.doc_tokenizer(combined_queries, max_length=self.query_maxlen+self.doc_maxlen, padding=True, return_tensors='pt', add_special_tokens=False)
+        input_encoding.data = {n: t.pin_memory().to(device=self.device, non_blocking=True) for n, t in
+                               input_encoding.data.items()}
 
 
-    def tokenize(self, queries, batched_docs):
+    def tokenize_queries_with_batched_docs(queries, batched_docs=None):
         # Need to tokenize awkwardly
         # Treat the query differently, truncate from the beginning
         input_queries = [f'{query}' for query, docs in zip(queries, batched_docs) for doc in docs]
@@ -250,13 +256,24 @@ class BERTScorer(BertForSequenceClassification):
         input_encoding : BatchEncoding = self.doc_tokenizer(combined_queries, max_length=self.query_maxlen+self.doc_maxlen, padding=True, return_tensors='pt', add_special_tokens=False)
         input_encoding.data = {n: t.pin_memory().to(device=self.device, non_blocking=True) for n, t in
                                input_encoding.data.items()}
-
         return input_encoding
 
+    def tokenize(queries, batched_docs=None):
+        if batched_docs is None:
+            return self.tokenize(queries)
+        else:
+            return self.tokenize_queries_with_batched_docs(queries, batched_docs)
+
+class BERTScorer(BertForSequenceClassification):
+    def __init__(self, config, query_maxlen, doc_maxlen, truncate_query_from_start=False, **kwargs):
+        super().__init__(config)
+        self.query_doc_tokenizer = QueryDocTokenizer(query_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased'),
+                                                     doc_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', never_split=[f"{DOC_TOKEN}"]),
+                                                    query_maxlen=query_maxlen,doc_maxlen=doc_maxlen)
     def forward(self, queries, batched_docs):
         n_instances = len(batched_docs)
         n_docs = len(batched_docs[0])
-        input_encoding = self.tokenize(queries, batched_docs)
+        input_encoding = self.query_doc_tokenizer.tokenize(queries, batched_docs)
         output: SequenceClassfierOutput = super().forward(input_ids=input_encoding['input_ids'],
                         attention_mask=input_encoding['attention_mask'])
         logits = output.logits.view(n_instances, n_docs, *output.logits.shape[1:])
@@ -714,37 +731,22 @@ class GeneratorOutput(Seq2SeqLMOutput):
     output_encoding: Dict = None
 
 class Generator(torch.nn.Module):
-    def __init__(self, generator, tokenizer, input_maxlen=256, output_maxlen=64):
+    def __init__(self, generator, tokenizer_constructor, input_maxlen=64, doc_maxlen=184, output_maxlen=64):
         super().__init__()
         self.generator = generator
-        self.tokenizer = tokenizer
-        self.input_maxlen=input_maxlen
+        query_tokenizer = tokenizer_constructor()
+        doc_tokenizer = tokenizer_constructor()
+        self.query_doc_encoder = QueryDocEncoder(query_tokenizer, doc_tokenizer, input_maxlen, doc_maxlen)
+        self.output_tokenizer = tokenizer_constructor()
         self.output_maxlen=output_maxlen
 
-    def prepare_generator_inputs(self, sources, batched_docs=None):
-        if batched_docs:
-            generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in
-                                docs]
-        else:
-            generator_inputs = [f'{source}' for source in sources]
-
-        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True,
-                                                       max_length=self.input_maxlen, pad_to_multiple_of=8)
-        input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in
-                               input_encoding.data.items()}
-        return input_encoding
-
     def prepare_training_inputs(self, sources, targets, batched_docs=None):
+        input_encoding = self.query_doc_encoder(sources, batched_docs)
+
         if batched_docs:
-            generator_inputs = [f'{source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for doc in docs]
             generator_outputs = [f'{target}' for target, docs in zip(targets, batched_docs) for doc in docs]
         else:
-            generator_inputs = [f'{source}' for source in sources]
             generator_outputs = [f'{target}' for target in targets]
-        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True, max_length=self.input_maxlen, pad_to_multiple_of=8)
-        input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in input_encoding.data.items()}
-
-
         output_encoding: BatchEncoding = self.tokenizer(generator_outputs, padding=True, return_tensors='pt', truncation=True, max_length=self.output_maxlen, pad_to_multiple_of=8)
         output_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in output_encoding.data.items()}
         return input_encoding, output_encoding
@@ -768,7 +770,7 @@ class Generator(torch.nn.Module):
 
 
     def generate(self, sources, batched_docs=None, **generation_kwargs)->ModelOutput:
-        input_encoding = self.prepare_generator_inputs(sources, batched_docs)
+        input_encoding = self.query_doc_encoder(sources, batched_docs)
         generator_output = self.generator.generate(input_ids=input_encoding['input_ids'],
                                         attention_mask=input_encoding['attention_mask'],
                                          return_dict_in_generate=True,
@@ -811,36 +813,30 @@ class Generator(torch.nn.Module):
         return rescorer_seq_ll
 
 class FiDGenerator(torch.nn.Module):
-    def __init__(self, generator, tokenizer, input_maxlen=256, output_maxlen=64):
+    def __init__(self, generator, tokenizer_constructor, input_maxlen=256, output_maxlen=64):
         super().__init__()
         self.generator = generator
-        self.tokenizer = tokenizer
-        self.input_maxlen=input_maxlen
+        query_tokenizer = tokenizer_constructor()
+        doc_tokenizer = tokenizer_constructor()
+        self.query_doc_encoder = QueryDocEncoder(query_tokenizer, doc_tokenizer, input_maxlen, doc_maxlen)
+        self.output_tokenizer = tokenizer_constructor()
         self.output_maxlen=output_maxlen
 
     def prepare_generator_inputs(self, sources, batched_docs):
         assert len(set(len(x) for x in batched_docs)) == 1, "Number of docs should not vary across sources"
-        generator_inputs = [f'{idx} {source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for idx, doc in enumerate(docs)]
-
-        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True,
-                                                       max_length=self.input_maxlen, pad_to_multiple_of=8)
-        input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in
-                               input_encoding.data.items()}
-        input_encoding.n_sources = len(sources)
-        input_encoding.n_docs_per_source = len(batched_docs[0])
+        batched_docs = [[f"{idx} {doc}" for idx, doc in enumerate(docs)] for docs in batched_docs]
+        input_encoding = query_doc_encoder(sources, batched_docs)
         return input_encoding
 
     def prepare_training_inputs(self, sources, targets, batched_docs):
         assert len(set(len(x) for x in batched_docs)) == 1, "Number of docs should not vary across sources"
-        generator_inputs = [f'{idx} {source} {DOC_TOKEN} {doc}' for source, docs in zip(sources, batched_docs) for idx, doc in enumerate(docs)]
-        generator_outputs = [f'{target}' for target in targets]
-
-        input_encoding: BatchEncoding = self.tokenizer(generator_inputs, padding=True, return_tensors='pt', truncation=True, max_length=self.input_maxlen, pad_to_multiple_of=8)
-        input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in input_encoding.data.items()}
+        batched_docs = [[f"{idx} {doc}" for idx, doc in enumerate(docs)] for docs in batched_docs]
+        input_encoding = query_doc_encoder(sources, batched_docs)
         input_encoding.n_sources = len(sources)
         input_encoding.n_docs_per_source = len(batched_docs[0])
 
 
+        generator_outputs = [f'{target}' for target in targets]
         output_encoding: BatchEncoding = self.tokenizer(generator_outputs, padding=True, return_tensors='pt', truncation=True, max_length=self.output_maxlen, pad_to_multiple_of=8)
         output_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in output_encoding.data.items()}
         return input_encoding, output_encoding
@@ -1059,9 +1055,9 @@ class NLLLossSystem(pl.LightningModule):
     def __init__(self, query_maxlen=180, label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
-        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        self._generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen, output_maxlen=label_maxlen)
+        self.generator = Generator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, output_maxlen=label_maxlen)
         self.loss_fn = LM_NLL(self.generator)
         self.expdir=expdir
         self.lr = lr
@@ -1099,10 +1095,10 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, fix_scorer=False) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
-        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        self._generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+        self.generator = Generator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -1193,8 +1189,8 @@ class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
             normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, rescored_top_k=8) :
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
-        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
-        self.generator = FiDGenerator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+        self._generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
+        self.generator = FiDGenerator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -1274,10 +1270,10 @@ class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen, doc_maxlen,label_maxlen=64, expdir='', lr=1e-3, truncate_query_from_start=False, p_scorer_checkpoint=None, q_scorer_checkpoint=None, invert_st_order=False, normalize_scorer_embeddings=True, query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, add_p_scores_to_q=False, KLD_weight=1, q_scorer_class=ColBERTScorer):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
-        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        self._generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
-        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+        self.generator = Generator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -1397,8 +1393,8 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
     def __init__(self, query_maxlen=180, doc_maxlen=64, label_maxlen=64 ,expdir='', lr=1e-3, truncate_query_from_start=False):
         super().__init__()
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
-        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
-        self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+        self._generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
+        self.generator = Generator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         self.lr = lr
         self.expdir = expdir
         self.set_loss_fn()
