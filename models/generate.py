@@ -122,9 +122,10 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
                     }
 
                     instance['retrievals'].append(doc_gens)
+                    if not self.FiD:
+                        overall_doc_idx+=1
+                if self.FiD:
                     overall_doc_idx+=1
-                    if self.FiD:
-                        break
                 self.instances.append(instance)
         return None
 
