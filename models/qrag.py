@@ -294,14 +294,28 @@ class ClosedSetRetrievals():
         with opener(self.path) as file:
             last_qid = None
             last_qid_retrievals = None
-            for chunk_df in pd.read_csv(file, sep='\t', chunksize=100000,
+            try: 
+                df_reader = pd.read_csv(file, sep='\t', chunksize=100000,
                                         usecols=[0,1,2,3,4,5],
                                         names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'], header=0,
                                         dtype={'qid': int, 'pid': int, 'rank': int, 'score': float, 'doc_text':str,
                                                'title':str} ,
-                                        na_filter=False):
+                                        na_filter=False)
+            except pd.errors.ParserError:
+                # Probably missing the title field
+                df_reader = pd.read_csv(file, sep='\t', chunksize=100000,
+                                        usecols=[0,1,2,3,4],
+                                        names=['qid', 'pid', 'rank', 'score', 'doc_text'], header=0,
+                                        dtype={'qid': int, 'pid': int, 'rank': int, 'score': float, 'doc_text':str} ,
+                                        na_filter=False)
+
+
+            for chunk_df in df_reader:
                 for qid, retrievals in chunk_df.groupby('qid'):
-                    retrievals['text'] = retrievals['title'].str.cat(retrievals['doc_text'], sep=f' {TEXT_TOKEN} ')
+                    if 'title' in retrievals:
+                        retrievals['text'] = retrievals['title'].str.cat(retrievals['doc_text'], sep=f' {TEXT_TOKEN} ')
+                    else:
+                        retrievals['text'] = retrievals['doc_text']
 
                     # The last qid, which will had an incomplete set of retrievals, will be completed here
                     if last_qid == qid:
