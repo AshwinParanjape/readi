@@ -27,13 +27,13 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
         self.generation_kwargs = generation_kwargs
         self.expdir = expdir
         self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")#, force_bos_token_to_be_generated=True)
-        self._generator_tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        self._generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         if FiD:
-            self.generator = FiDGenerator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+            self.generator = FiDGenerator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         else:
-            self.generator = Generator(self._generator, self._generator_tokenizer, input_maxlen=query_maxlen+doc_maxlen, output_maxlen=label_maxlen)
+            self.generator = Generator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
