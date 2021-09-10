@@ -703,7 +703,7 @@ class PQDataset(torch.utils.data.IterableDataset):
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
-                merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
+                merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=[c for c in q_retrievals.columns if c!='score'], suffixes = ('_p', '_q'))
                 sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
                 #sampled_retrievals = self.sampler(merged_retrievals)
                 if sampled_retrievals is None:
