@@ -28,6 +28,7 @@ import argparse
 from pathlib import Path
 from meticulous import Experiment
 from tqdm import tqdm
+import random
 
 print(os.getcwd())
 sys.path = ['retriever/ColBERT'] + sys.path
@@ -613,15 +614,18 @@ class PosteriorTopKDocumentSampler(DocumentSampler):
         return top_k_retrievals
 
 class Seq2SeqDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, worker_id=0, n_workers=1):
+    def __init__(self, source_path: str, target_path: str, worker_id=0, n_workers=1, subsample=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.worker_id = worker_id
         self.n_workers = n_workers
+        self.subsample=subsample
 
     def __iter__(self):
         for qid, (source, target) in enumerate(zip(self.source['source'], self.target['target'])):
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
+                if self.subsample < 1 and random.random() > self.subsample:
+                    continue
                 yield {'qid': qid,
                        'source': source,
                        'target': target,
@@ -639,7 +643,7 @@ def recompute_retriever_scores(scorer: ColBERTScorer, query: str, retrievals_df:
     return rescored_retrievals_df
 
 class PDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1, p_scorer: ColBERTScorer = None, yield_scores=False):
+    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1, p_scorer: ColBERTScorer = None, yield_scores=False, subsample=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         if target_path:
             self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
@@ -648,6 +652,7 @@ class PDataset(torch.utils.data.IterableDataset):
             self.target['target'] = self.source['source'] # To quickly get the same shape
             self.target['target'] = ''
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
+        self.subsample=subsample
         self.p_scorer = p_scorer
         self.cached_scores: Dict[int, Dict[int, float]] = defaultdict(dict)
         self.sampler = sampler
@@ -659,6 +664,8 @@ class PDataset(torch.utils.data.IterableDataset):
         for qid, (source, target, (p_qid, p_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals)):
             #assert (qid == p_qid) , (qid, p_qid)
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
+                if self.subsample < 1 and random.random() > self.subsample:
+                    continue
                 if self.p_scorer:
                     p_retrievals = recompute_retriever_scores(self.p_scorer, source, p_retrievals)
                 sampled_retrievals = self.sampler(p_retrievals)
@@ -676,11 +683,12 @@ class PDataset(torch.utils.data.IterableDataset):
 
 
 class PQDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False, include_unrelated=False):
+    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False, include_unrelated=False, subsample=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
+        self.subsample=subsample
         #p_samples_list = []
         #q_samples_list = []
         #for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
@@ -703,6 +711,8 @@ class PQDataset(torch.utils.data.IterableDataset):
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
+                if self.subsample < 1 and random.random() > self.subsample:
+                    continue
                 merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=['qid', 'pid', 'doc_text', 'title', 'text'], suffixes = ('_p', '_q'))
                 sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
                 #sampled_retrievals = self.sampler(merged_retrievals)
@@ -1632,6 +1642,8 @@ if __name__ == '__main__':
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
+    training_args_group.add_argument('--train_subsample', default=1.0, type=float, help="Uniformly randomly keep training set samples with given probability")
+    training_args_group.add_argument('--val_subsample', default=1.0, type=float, help="Uniformly randomly keep validation set samples with given probability")
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
     training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
@@ -1814,9 +1826,9 @@ if __name__ == '__main__':
 
     secondary_training = args.loss_type in {'Reconstruction', 'KLD', 'PosNeg'}
     if args.loss_type == 'NLL':
-        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus)
+        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
-        val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
+        val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type in {'Marginalized', 'FiDNLL'}:
         assert args.doc_sampler in {'SimpleDocumentSampler', 'TopKDocumentSampler'}
@@ -1827,20 +1839,20 @@ if __name__ == '__main__':
             doc_sampler = TopKDocumentSampler(args.n_sampled_docs_train)
             val_doc_sampler = TopKDocumentSampler(args.n_sampled_docs_valid)
 
-        train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
+        train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'Reconstruction':
         assert args.doc_sampler in {'PosteriorDocumentSampler'}
         doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training, include_unrelated=False)
+                                  yield_scores=secondary_training, include_unrelated=False, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
                                 args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
-                                yield_scores = secondary_training, include_unrelated=False)
+                                yield_scores = secondary_training, include_unrelated=False, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
         assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler'}
@@ -1856,11 +1868,11 @@ if __name__ == '__main__':
             assert False
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training)
+                                  yield_scores=secondary_training, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
-                               worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training)
+                               worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
@@ -1882,11 +1894,11 @@ if __name__ == '__main__':
 
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training)
+                                  yield_scores=secondary_training, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
-                               worker_id=local_rank, n_workers=args.gpus)
+                               worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     #trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
