@@ -374,7 +374,7 @@ class RandomDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.n > len(retrievals):
-            print("Fewer retrievals than n", sys.stderr)
+            #print("Fewer retrievals than n", sys.stderr)
             n = len(retrievals)
         else:
             n= self.n
@@ -390,7 +390,7 @@ class TopKDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.k > len(retrievals):
-            print("Fewer retrievals than k", sys.stderr)
+            #print("Fewer retrievals than k", sys.stderr)
             k = len(retrievals)
         else:
             k= self.k
@@ -410,7 +410,7 @@ class SimpleDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.n > len(retrievals):
-            print("Fewer retrievals than n", sys.stderr)
+            #print("Fewer retrievals than n", sys.stderr)
             n = len(retrievals)
         else:
             n= self.n
@@ -605,7 +605,7 @@ class PosteriorTopKDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.k > len(retrievals):
-            print("Fewer retrievals than k", sys.stderr)
+            #print("Fewer retrievals than k", sys.stderr)
             k = len(retrievals)
         else:
             k= self.k
