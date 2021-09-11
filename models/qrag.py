@@ -760,9 +760,9 @@ class GeneratorOutput(Seq2SeqLMOutput):
     output_encoding: Dict = None
 
 class Generator(torch.nn.Module):
-    def __init__(self, generator, tokenizer_constructor, input_maxlen=64, doc_maxlen=184, output_maxlen=64):
+    def __init__(self, generator_constructor, tokenizer_constructor, input_maxlen=64, doc_maxlen=184, output_maxlen=64):
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         query_tokenizer = tokenizer_constructor()
         doc_tokenizer = tokenizer_constructor()
         self.query_doc_encoder = QueryDocEncoder(query_tokenizer, doc_tokenizer, input_maxlen, doc_maxlen)
@@ -846,9 +846,9 @@ class Generator(torch.nn.Module):
         return rescorer_seq_ll
 
 class FiDGenerator(torch.nn.Module):
-    def __init__(self, generator, tokenizer_constructor, input_maxlen=256, output_maxlen=64):
+    def __init__(self, generator_constructor, tokenizer_constructor, input_maxlen=256, output_maxlen=64):
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         query_tokenizer = tokenizer_constructor()
         doc_tokenizer = tokenizer_constructor()
         self.query_doc_encoder = QueryDocEncoder(query_tokenizer, doc_tokenizer, input_maxlen, doc_maxlen)
@@ -1745,13 +1745,13 @@ if __name__ == '__main__':
 
     #create generator
     if args.loss_type in {'NLL', 'Marginalized', 'ELBO', 'FiDNLL', 'Reconstruction'}:
-        _generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
+        _generator_constructor = lambda: BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         _generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         if args.loss_type == 'FiDNLL':
-            generator_constructor = lambda: FiDGenerator(_generator, _generator_tokenizer_constructor,
+            generator_constructor = lambda: FiDGenerator(_generator_constructor, _generator_tokenizer_constructor,
                 input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
         else:
-            generator_constructor = lambda: Generator(_generator, _generator_tokenizer_constructor,
+            generator_constructor = lambda: Generator(_generator_constructor, _generator_tokenizer_constructor,
                     input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
 
     if args.add_p_scores_to_q: assert args.loss_type == 'ELBO'
