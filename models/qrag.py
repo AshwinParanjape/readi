@@ -1089,9 +1089,9 @@ class InheritableCheckpointMixin():
 
 
 class NLLLossSystem(pl.LightningModule):
-    def __init__(self, generator, expdir='', lr=1e-3) :
+    def __init__(self, generator_constructor, expdir='', lr=1e-3) :
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         self.loss_fn = LM_NLL(self.generator)
         self.expdir=expdir
         self.lr = lr
@@ -1125,10 +1125,10 @@ class NLLLossSystem(pl.LightningModule):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, generator, expdir='', lr=1e-3, fix_scorer=False) :
+    def __init__(self, p_scorer_constructor, generator_constructor, expdir='', lr=1e-3, fix_scorer=False) :
         super().__init__()
-        self.generator=generator
-        self.p_scorer = p_scorer
+        self.generator=generator_constructor()
+        self.p_scorer = p_scorer_constructor()
         self.fix_scorer = fix_scorer
         if self.fix_scorer:
             self.p_scorer.eval()
@@ -1208,10 +1208,10 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, generator, expdir='', lr=1e-3, rescored_top_k=8) :
+    def __init__(self, p_scorer_constructor, generator_constructor, expdir='', lr=1e-3, rescored_top_k=8) :
         super().__init__()
-        self.p_scorer = p_scorer
-        self.generator = generator
+        self.p_scorer = p_scorer_constructor()
+        self.generator = generator_constructor()
         self.p_scorer.eval()
         for param in self.p_scorer.parameters():
             param.requires_grad = False
@@ -1280,11 +1280,11 @@ class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
 
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, q_scorer, generator, expdir='', lr=1e-3, invert_st_order=False, add_p_scores_to_q=False, KLD_weight=1):
+    def __init__(self, p_scorer_constructor, q_scorer_constructor, generator_constructor, expdir='', lr=1e-3, invert_st_order=False, add_p_scores_to_q=False, KLD_weight=1):
         super().__init__()
-        self.p_scorer = p_scorer
-        self.q_scorer = q_scorer
-        self.generator = generator
+        self.p_scorer = p_scorer_constructor()
+        self.q_scorer = q_scorer_constructor()
+        self.generator = generator_constructor()
         self.invert_st_order = invert_st_order
         self.add_p_scores_to_q = add_p_scores_to_q
         self.KLD_weight=KLD_weight
@@ -1376,9 +1376,9 @@ class ReconstructionLossFn(torch.nn.Module):
 
 class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
     # We assume that the Q scorer is fixed and hence doesn't need to be run
-    def __init__(self, generator, expdir='', lr=1e-3):
+    def __init__(self, generator_constructor, expdir='', lr=1e-3):
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         self.lr = lr
         self.expdir = expdir
         self.set_loss_fn()
@@ -1465,10 +1465,10 @@ class KLDivergenceFn(torch.nn.Module):
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, q_scorer, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True):
+    def __init__(self, p_scorer_constructor, q_scorer_constructor, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True):
         super().__init__()
-        self.p_scorer = p_scorer
-        self.q_scorer = q_scorer
+        self.p_scorer = p_scorer_constructor()
+        self.q_scorer = q_scorer_constructor()
         self.q_scorer.eval()
         self.loss_fn_constructor = loss_fn
         self.set_loss_fn()
@@ -1710,12 +1710,14 @@ if __name__ == '__main__':
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger, track_grad_norm=args.track_grad_norm, gradient_clip_val=args.gradient_clip_val,
                           default_root_dir=curexpdir,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches, plugins = DDPPlugin(find_unused_parameters=True))
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)#, plugins = DDPPlugin(find_unused_parameters=True))
 
 
+    # Create model constructors that are then passed into Pytorch Lightning modules and used in their initialization functions
+    # Allows for lazy initialization (as needed by the systems) and potentially avoids issues due to multiple model initializations during Multi-GPU multi-process training
     # Create p scorer
     if args.loss_type in {'Marginalized', 'ELBO', 'FiDNLL', 'KLD'}:
-        p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+        p_scorer_constructor = lambda: ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = args.truncate_query_from_start,
                                           query_maxlen=args.query_maxlen,
                                           doc_maxlen=args.doc_maxlen,
@@ -1731,7 +1733,7 @@ if __name__ == '__main__':
             q_scorer_class = ColBERTScorer
         elif args.q_scorer_class == 'BERTScorer':
             q_scorer_class = BERTScorer
-        q_scorer = q_scorer_class.from_pretrained('bert-base-uncased',
+        q_scorer_constructor = lambda: q_scorer_class.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = args.truncate_query_from_start,
                                           query_maxlen=args.query_maxlen,
                                           doc_maxlen=args.doc_maxlen,
@@ -1746,17 +1748,17 @@ if __name__ == '__main__':
         _generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         _generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         if args.loss_type == 'FiDNLL':
-            generator = FiDGenerator(_generator, _generator_tokenizer_constructor,
+            generator_constructor = lambda: FiDGenerator(_generator, _generator_tokenizer_constructor,
                 input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
         else:
-            generator = Generator(_generator, _generator_tokenizer_constructor,
+            generator_constructor = lambda: Generator(_generator, _generator_tokenizer_constructor,
                     input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
 
     if args.add_p_scores_to_q: assert args.loss_type == 'ELBO'
     # Create models
     if args.loss_type == 'NLL':
         # Still old style
-        model = NLLLossSystem(generator, lr=args.lr, expdir=curexpdir)
+        model = NLLLossSystem(generator_constructor, lr=args.lr, expdir=curexpdir)
 
     elif args.loss_type == 'FiDNLL':
         if args.scorer_checkpoint_type == 'colbert':
@@ -1767,7 +1769,7 @@ if __name__ == '__main__':
                                                                            generator_checkpoint=args.generator_checkpoint)
         else:
             assert False
-        model = FiDNLLSystem.init_from_checkpoints(state_dict, p_scorer, generator, expdir=curexpdir, lr=args.lr, escored_top_k = args.FiD_rescored_top_k)
+        model = FiDNLLSystem.init_from_checkpoints(state_dict, p_scorer_constructor, generator_constructor, expdir=curexpdir, lr=args.lr, escored_top_k = args.FiD_rescored_top_k)
 
     elif args.loss_type == 'Marginalized':
         # Still old style loading from checkpoints
@@ -1780,7 +1782,7 @@ if __name__ == '__main__':
                                                                            generator_checkpoint=args.generator_checkpoint)
         else:
             assert False
-        model = MarginalizedLossSystem.init_from_checkpoints(state_dict, p_scorer, generator, expdir=curexpdir, lr=args.lr, fix_scorer=args.fix_p_scorer)
+        model = MarginalizedLossSystem.init_from_checkpoints(state_dict, p_scorer_constructor, generator_constructor, expdir=curexpdir, lr=args.lr, fix_scorer=args.fix_p_scorer)
     elif args.loss_type == 'ELBO':
         #TODO, test if the following are identical
         if args.scorer_checkpoint_type == 'colbert':
@@ -1793,7 +1795,7 @@ if __name__ == '__main__':
         else:
             assert False
 
-        model = ELBOLossSystem.init_from_checkpoints(state_dict, p_scorer, q_scorer, generator,
+        model = ELBOLossSystem.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, generator_constructor,
                                                      expdir=curexpdir, lr=args.lr,
                                                      invert_st_order=args.invert_st_order,
                                                      add_p_scores_to_q = args.add_p_scores_to_q,
@@ -1802,9 +1804,9 @@ if __name__ == '__main__':
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
             state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
-            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, generator, expdir=curexpdir, lr=args.lr)
+            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, generator_constructor, expdir=curexpdir, lr=args.lr)
         else:
-            model = OnlyGeneratorTraining(generator, expdir=curexpdir, lr=args.lr)
+            model = OnlyGeneratorTraining(generator_constructor, expdir=curexpdir, lr=args.lr)
     elif args.loss_type == 'KLD' or args.loss_type=='PosNeg':
         if args.loss_type == 'KLD':
             loss_fn = KLDivergenceFn
@@ -1820,7 +1822,7 @@ if __name__ == '__main__':
             state_dict = OnlyRetrieverTraining.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint,
                 q_scorer_checkpoint=args.q_scorer_checkpoint)
-        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer, q_scorer, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None)
+        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None)
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
 
