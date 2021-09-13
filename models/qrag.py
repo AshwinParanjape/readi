@@ -15,7 +15,7 @@ from pytorch_lightning.profiler import AdvancedProfiler
 from pytorch_lightning.plugins.training_type.ddp import DDPPlugin
 from torch.utils.data import DataLoader
 from transformers import BartForConditionalGeneration, BartTokenizer, BertPreTrainedModel, BertModel, BertTokenizerFast, \
-    BatchEncoding, BertForSequenceClassification, BertTokenizer
+    BatchEncoding, BertForSequenceClassification, BertTokenizer, BertConfig
 from transformers.file_utils import ModelOutput
 from transformers.modeling_outputs import Seq2SeqLMOutput
 import string
@@ -1649,6 +1649,10 @@ if __name__ == '__main__':
     training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
     training_args_group.add_argument('--fix_p_scorer', action='store_true', default=False, help='When true, p_scorer is kept fixed')
     training_args_group.add_argument('--KLD_weight', type=float, default=1, help='Weight assigned to KLD loss')
+    training_args_group.add_argument('--p_scorer_hidden_dropout_prob', type=float, default=0.1)
+    training_args_group.add_argument('--p_scorer_attention_probs_dropout_prob', type=float, default=0.1)
+    training_args_group.add_argument('--q_scorer_hidden_dropout_prob', type=float, default=0.1)
+    training_args_group.add_argument('--q_scorer_attention_probs_dropout_prob', type=float, default=0.1)
     training_args_group.add_argument('--FiD_rescored_top_k', type=int, help="During FiDNLL training, sample n_sampled_docs but then rescore and keep FiD_rescored_top_k documents from that set.")
 
 
@@ -1717,7 +1721,10 @@ if __name__ == '__main__':
     # Allows for lazy initialization (as needed by the systems) and potentially avoids issues due to multiple model initializations during Multi-GPU multi-process training
     # Create p scorer
     if args.loss_type in {'Marginalized', 'ELBO', 'FiDNLL', 'KLD'}:
-        p_scorer_constructor = lambda: ColBERTScorer.from_pretrained('bert-base-uncased',
+        p_scorer_config = BertConfig.from_pretrained('bert-base-uncased')
+        p_scorer_config.hidden_dropout_prob = args.p_scorer_hidden_dropout_prob
+        p_scorer_config.attention_probs_dropout_prob = args.p_scorer_attention_probs_dropout_prob
+        p_scorer_constructor = lambda: ColBERTScorer.from_pretrained('bert-base-uncased', config=p_scorer_config,
                                           truncate_query_from_start = args.truncate_query_from_start,
                                           query_maxlen=args.query_maxlen,
                                           doc_maxlen=args.doc_maxlen,
@@ -1733,7 +1740,10 @@ if __name__ == '__main__':
             q_scorer_class = ColBERTScorer
         elif args.q_scorer_class == 'BERTScorer':
             q_scorer_class = BERTScorer
-        q_scorer_constructor = lambda: q_scorer_class.from_pretrained('bert-base-uncased',
+        q_scorer_config = BertConfig.from_pretrained('bert-base-uncased')
+        q_scorer_config.hidden_dropout_prob = args.q_scorer_hidden_dropout_prob
+        q_scorer_config.attention_probs_dropout_prob = args.q_scorer_attention_probs_dropout_prob
+        q_scorer_constructor = lambda: q_scorer_class.from_pretrained('bert-base-uncased', config=q_scorer_config,
                                           truncate_query_from_start = args.truncate_query_from_start,
                                           query_maxlen=args.query_maxlen,
                                           doc_maxlen=args.doc_maxlen,
