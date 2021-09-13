@@ -1684,7 +1684,7 @@ if __name__ == '__main__':
         print("Overriding the model using the checkpoint")
         trainer = Trainer(gpus=args.gpus, logger=logger,
                           default_root_dir=curexpdir, track_grad_norm=2,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_from_checkpoint, limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], resume_from_checkpoint=args.resume_training_from_checkpoint, limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)
         trainer.max_epochs = trainer.current_epoch+args.max_epochs
 
         #if args.loss_type == 'NLL':
