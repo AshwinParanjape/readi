@@ -15,7 +15,7 @@ from pytorch_lightning.profiler import AdvancedProfiler
 from pytorch_lightning.plugins.training_type.ddp import DDPPlugin
 from torch.utils.data import DataLoader
 from transformers import BartForConditionalGeneration, BartTokenizer, BertPreTrainedModel, BertModel, BertTokenizerFast, \
-    BatchEncoding, BertForSequenceClassification, BertTokenizer
+    BatchEncoding, BertForSequenceClassification, BertTokenizer, BertConfig
 from transformers.file_utils import ModelOutput
 from transformers.modeling_outputs import Seq2SeqLMOutput
 import string
@@ -28,6 +28,7 @@ import argparse
 from pathlib import Path
 from meticulous import Experiment
 from tqdm import tqdm
+import random
 
 print(os.getcwd())
 sys.path = ['retriever/ColBERT'] + sys.path
@@ -373,7 +374,7 @@ class RandomDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.n > len(retrievals):
-            print("Fewer retrievals than n", sys.stderr)
+            #print("Fewer retrievals than n", sys.stderr)
             n = len(retrievals)
         else:
             n= self.n
@@ -389,7 +390,7 @@ class TopKDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.k > len(retrievals):
-            print("Fewer retrievals than k", sys.stderr)
+            #print("Fewer retrievals than k", sys.stderr)
             k = len(retrievals)
         else:
             k= self.k
@@ -409,7 +410,7 @@ class SimpleDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.n > len(retrievals):
-            print("Fewer retrievals than n", sys.stderr)
+            #print("Fewer retrievals than n", sys.stderr)
             n = len(retrievals)
         else:
             n= self.n
@@ -604,7 +605,7 @@ class PosteriorTopKDocumentSampler(DocumentSampler):
         if len(retrievals) == 0:
             return retrievals
         if self.k > len(retrievals):
-            print("Fewer retrievals than k", sys.stderr)
+            #print("Fewer retrievals than k", sys.stderr)
             k = len(retrievals)
         else:
             k= self.k
@@ -613,15 +614,18 @@ class PosteriorTopKDocumentSampler(DocumentSampler):
         return top_k_retrievals
 
 class Seq2SeqDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, worker_id=0, n_workers=1):
+    def __init__(self, source_path: str, target_path: str, worker_id=0, n_workers=1, subsample=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.worker_id = worker_id
         self.n_workers = n_workers
+        self.subsample=subsample
 
     def __iter__(self):
         for qid, (source, target) in enumerate(zip(self.source['source'], self.target['target'])):
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
+                if self.subsample < 1 and random.random() > self.subsample:
+                    continue
                 yield {'qid': qid,
                        'source': source,
                        'target': target,
@@ -639,7 +643,7 @@ def recompute_retriever_scores(scorer: ColBERTScorer, query: str, retrievals_df:
     return rescored_retrievals_df
 
 class PDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1, p_scorer: ColBERTScorer = None, yield_scores=False):
+    def __init__(self, source_path: str, target_path: str, p_retrievals_path: str, sampler:DocumentSampler, worker_id=0, n_workers=1, p_scorer: ColBERTScorer = None, yield_scores=False, subsample=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         if target_path:
             self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
@@ -648,6 +652,7 @@ class PDataset(torch.utils.data.IterableDataset):
             self.target['target'] = self.source['source'] # To quickly get the same shape
             self.target['target'] = ''
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
+        self.subsample=subsample
         self.p_scorer = p_scorer
         self.cached_scores: Dict[int, Dict[int, float]] = defaultdict(dict)
         self.sampler = sampler
@@ -659,6 +664,8 @@ class PDataset(torch.utils.data.IterableDataset):
         for qid, (source, target, (p_qid, p_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals)):
             #assert (qid == p_qid) , (qid, p_qid)
             if qid % self.n_workers == self.worker_id and qid < len(self)*self.n_workers:  # This query belongs to this worker
+                if self.subsample < 1 and random.random() > self.subsample:
+                    continue
                 if self.p_scorer:
                     p_retrievals = recompute_retriever_scores(self.p_scorer, source, p_retrievals)
                 sampled_retrievals = self.sampler(p_retrievals)
@@ -676,11 +683,12 @@ class PDataset(torch.utils.data.IterableDataset):
 
 
 class PQDataset(torch.utils.data.IterableDataset):
-    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False, include_unrelated=False):
+    def __init__(self, source_path:str, target_path: str, p_retrievals_path: str, q_retrievals_path: str, sampler: DocumentSampler, worker_id=0,n_workers=1, yield_scores=False, include_unrelated=False, subsample=1):
         self.source = pd.read_csv(source_path, sep='\t', names=['source'], dtype=str, na_filter=False)
         self.target = pd.read_csv(target_path, sep='\t', names=['target'], dtype=str, na_filter=False)
         self.p_retrievals = ClosedSetRetrievals(p_retrievals_path)
         self.q_retrievals = ClosedSetRetrievals(q_retrievals_path)
+        self.subsample=subsample
         #p_samples_list = []
         #q_samples_list = []
         #for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in tqdm(enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals))):
@@ -703,7 +711,9 @@ class PQDataset(torch.utils.data.IterableDataset):
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
             #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
-                merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=[c for c in q_retrievals.columns if c!='score'], suffixes = ('_p', '_q'))
+                if self.subsample < 1 and random.random() > self.subsample:
+                    continue
+                merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=[c for c in q_retrievals.columns if c != 'score'], suffixes = ('_p', '_q'))
                 sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
                 #sampled_retrievals = self.sampler(merged_retrievals)
                 if sampled_retrievals is None:
@@ -750,9 +760,9 @@ class GeneratorOutput(Seq2SeqLMOutput):
     output_encoding: Dict = None
 
 class Generator(torch.nn.Module):
-    def __init__(self, generator, tokenizer_constructor, input_maxlen=64, doc_maxlen=184, output_maxlen=64):
+    def __init__(self, generator_constructor, tokenizer_constructor, input_maxlen=64, doc_maxlen=184, output_maxlen=64):
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         query_tokenizer = tokenizer_constructor()
         doc_tokenizer = tokenizer_constructor()
         self.query_doc_encoder = QueryDocEncoder(query_tokenizer, doc_tokenizer, input_maxlen, doc_maxlen)
@@ -836,9 +846,9 @@ class Generator(torch.nn.Module):
         return rescorer_seq_ll
 
 class FiDGenerator(torch.nn.Module):
-    def __init__(self, generator, tokenizer_constructor, input_maxlen=256, output_maxlen=64):
+    def __init__(self, generator_constructor, tokenizer_constructor, input_maxlen=256, output_maxlen=64):
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         query_tokenizer = tokenizer_constructor()
         doc_tokenizer = tokenizer_constructor()
         self.query_doc_encoder = QueryDocEncoder(query_tokenizer, doc_tokenizer, input_maxlen, doc_maxlen)
@@ -1079,9 +1089,9 @@ class InheritableCheckpointMixin():
 
 
 class NLLLossSystem(pl.LightningModule):
-    def __init__(self, generator, expdir='', lr=1e-3) :
+    def __init__(self, generator_constructor, expdir='', lr=1e-3) :
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         self.loss_fn = LM_NLL(self.generator)
         self.expdir=expdir
         self.lr = lr
@@ -1115,10 +1125,10 @@ class NLLLossSystem(pl.LightningModule):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, generator, expdir='', lr=1e-3, fix_scorer=False) :
+    def __init__(self, p_scorer_constructor, generator_constructor, expdir='', lr=1e-3, fix_scorer=False) :
         super().__init__()
-        self.generator=generator
-        self.p_scorer = p_scorer
+        self.generator=generator_constructor()
+        self.p_scorer = p_scorer_constructor()
         self.fix_scorer = fix_scorer
         if self.fix_scorer:
             self.p_scorer.eval()
@@ -1198,10 +1208,10 @@ class MarginalizedLossSystem(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
 class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, generator, expdir='', lr=1e-3, rescored_top_k=8) :
+    def __init__(self, p_scorer_constructor, generator_constructor, expdir='', lr=1e-3, rescored_top_k=8) :
         super().__init__()
-        self.p_scorer = p_scorer
-        self.generator = generator
+        self.p_scorer = p_scorer_constructor()
+        self.generator = generator_constructor()
         self.p_scorer.eval()
         for param in self.p_scorer.parameters():
             param.requires_grad = False
@@ -1270,11 +1280,11 @@ class FiDNLLSystem(pl.LightningModule, InheritableCheckpointMixin):
 
 
 class ELBOLossSystem(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, q_scorer, generator, expdir='', lr=1e-3, invert_st_order=False, add_p_scores_to_q=False, KLD_weight=1):
+    def __init__(self, p_scorer_constructor, q_scorer_constructor, generator_constructor, expdir='', lr=1e-3, invert_st_order=False, add_p_scores_to_q=False, KLD_weight=1):
         super().__init__()
-        self.p_scorer = p_scorer
-        self.q_scorer = q_scorer
-        self.generator = generator
+        self.p_scorer = p_scorer_constructor()
+        self.q_scorer = q_scorer_constructor()
+        self.generator = generator_constructor()
         self.invert_st_order = invert_st_order
         self.add_p_scores_to_q = add_p_scores_to_q
         self.KLD_weight=KLD_weight
@@ -1366,9 +1376,9 @@ class ReconstructionLossFn(torch.nn.Module):
 
 class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
     # We assume that the Q scorer is fixed and hence doesn't need to be run
-    def __init__(self, generator, expdir='', lr=1e-3):
+    def __init__(self, generator_constructor, expdir='', lr=1e-3):
         super().__init__()
-        self.generator = generator
+        self.generator = generator_constructor()
         self.lr = lr
         self.expdir = expdir
         self.set_loss_fn()
@@ -1455,10 +1465,10 @@ class KLDivergenceFn(torch.nn.Module):
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer, q_scorer, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True):
+    def __init__(self, p_scorer_constructor, q_scorer_constructor, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True):
         super().__init__()
-        self.p_scorer = p_scorer
-        self.q_scorer = q_scorer
+        self.p_scorer = p_scorer_constructor()
+        self.q_scorer = q_scorer_constructor()
         self.q_scorer.eval()
         self.loss_fn_constructor = loss_fn
         self.set_loss_fn()
@@ -1632,11 +1642,17 @@ if __name__ == '__main__':
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
+    training_args_group.add_argument('--train_subsample', default=1.0, type=float, help="Uniformly randomly keep training set samples with given probability")
+    training_args_group.add_argument('--val_subsample', default=1.0, type=float, help="Uniformly randomly keep validation set samples with given probability")
     training_args_group.add_argument('--track_grad_norm', default=-1, type=int, help="-1 no tracking. Otherwise tracks that p-norm. May be set to ‘inf’ infinity-norm.")
     training_args_group.add_argument('--gradient_clip_val', default=0, type=float, help="0 means don’t clip.; default algorithm: norm")
     training_args_group.add_argument('--invert_st_order', type=bool, help='When true, target | source is fed into q retriever; when false source | target is fed into q retriever')
     training_args_group.add_argument('--fix_p_scorer', action='store_true', default=False, help='When true, p_scorer is kept fixed')
     training_args_group.add_argument('--KLD_weight', type=float, default=1, help='Weight assigned to KLD loss')
+    training_args_group.add_argument('--p_scorer_hidden_dropout_prob', type=float, default=0.1)
+    training_args_group.add_argument('--p_scorer_attention_probs_dropout_prob', type=float, default=0.1)
+    training_args_group.add_argument('--q_scorer_hidden_dropout_prob', type=float, default=0.1)
+    training_args_group.add_argument('--q_scorer_attention_probs_dropout_prob', type=float, default=0.1)
     training_args_group.add_argument('--FiD_rescored_top_k', type=int, help="During FiDNLL training, sample n_sampled_docs but then rescore and keep FiD_rescored_top_k documents from that set.")
 
 
@@ -1698,12 +1714,17 @@ if __name__ == '__main__':
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger, track_grad_norm=args.track_grad_norm, gradient_clip_val=args.gradient_clip_val,
                           default_root_dir=curexpdir,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches, plugins = DDPPlugin(find_unused_parameters=True))
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)#, plugins = DDPPlugin(find_unused_parameters=True))
 
 
+    # Create model constructors that are then passed into Pytorch Lightning modules and used in their initialization functions
+    # Allows for lazy initialization (as needed by the systems) and potentially avoids issues due to multiple model initializations during Multi-GPU multi-process training
     # Create p scorer
     if args.loss_type in {'Marginalized', 'ELBO', 'FiDNLL', 'KLD'}:
-        p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
+        p_scorer_config = BertConfig.from_pretrained('bert-base-uncased')
+        p_scorer_config.hidden_dropout_prob = args.p_scorer_hidden_dropout_prob
+        p_scorer_config.attention_probs_dropout_prob = args.p_scorer_attention_probs_dropout_prob
+        p_scorer_constructor = lambda: ColBERTScorer.from_pretrained('bert-base-uncased', config=p_scorer_config,
                                           truncate_query_from_start = args.truncate_query_from_start,
                                           query_maxlen=args.query_maxlen,
                                           doc_maxlen=args.doc_maxlen,
@@ -1719,7 +1740,10 @@ if __name__ == '__main__':
             q_scorer_class = ColBERTScorer
         elif args.q_scorer_class == 'BERTScorer':
             q_scorer_class = BERTScorer
-        q_scorer = q_scorer_class.from_pretrained('bert-base-uncased',
+        q_scorer_config = BertConfig.from_pretrained('bert-base-uncased')
+        q_scorer_config.hidden_dropout_prob = args.q_scorer_hidden_dropout_prob
+        q_scorer_config.attention_probs_dropout_prob = args.q_scorer_attention_probs_dropout_prob
+        q_scorer_constructor = lambda: q_scorer_class.from_pretrained('bert-base-uncased', config=q_scorer_config,
                                           truncate_query_from_start = args.truncate_query_from_start,
                                           query_maxlen=args.query_maxlen,
                                           doc_maxlen=args.doc_maxlen,
@@ -1731,20 +1755,20 @@ if __name__ == '__main__':
 
     #create generator
     if args.loss_type in {'NLL', 'Marginalized', 'ELBO', 'FiDNLL', 'Reconstruction'}:
-        _generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
+        _generator_constructor = lambda: BartForConditionalGeneration.from_pretrained("facebook/bart-base")
         _generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         if args.loss_type == 'FiDNLL':
-            generator = FiDGenerator(_generator, _generator_tokenizer_constructor,
+            generator_constructor = lambda: FiDGenerator(_generator_constructor, _generator_tokenizer_constructor,
                 input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
         else:
-            generator = Generator(_generator, _generator_tokenizer_constructor,
+            generator_constructor = lambda: Generator(_generator_constructor, _generator_tokenizer_constructor,
                     input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
 
     if args.add_p_scores_to_q: assert args.loss_type == 'ELBO'
     # Create models
     if args.loss_type == 'NLL':
         # Still old style
-        model = NLLLossSystem(generator, lr=args.lr, expdir=curexpdir)
+        model = NLLLossSystem(generator_constructor, lr=args.lr, expdir=curexpdir)
 
     elif args.loss_type == 'FiDNLL':
         if args.scorer_checkpoint_type == 'colbert':
@@ -1755,7 +1779,7 @@ if __name__ == '__main__':
                                                                            generator_checkpoint=args.generator_checkpoint)
         else:
             assert False
-        model = FiDNLLSystem.init_from_checkpoints(state_dict, p_scorer, generator, expdir=curexpdir, lr=args.lr, escored_top_k = args.FiD_rescored_top_k)
+        model = FiDNLLSystem.init_from_checkpoints(state_dict, p_scorer_constructor, generator_constructor, expdir=curexpdir, lr=args.lr, escored_top_k = args.FiD_rescored_top_k)
 
     elif args.loss_type == 'Marginalized':
         # Still old style loading from checkpoints
@@ -1768,7 +1792,7 @@ if __name__ == '__main__':
                                                                            generator_checkpoint=args.generator_checkpoint)
         else:
             assert False
-        model = MarginalizedLossSystem.init_from_checkpoints(state_dict, p_scorer, generator, expdir=curexpdir, lr=args.lr, fix_scorer=args.fix_p_scorer)
+        model = MarginalizedLossSystem.init_from_checkpoints(state_dict, p_scorer_constructor, generator_constructor, expdir=curexpdir, lr=args.lr, fix_scorer=args.fix_p_scorer)
     elif args.loss_type == 'ELBO':
         #TODO, test if the following are identical
         if args.scorer_checkpoint_type == 'colbert':
@@ -1781,7 +1805,7 @@ if __name__ == '__main__':
         else:
             assert False
 
-        model = ELBOLossSystem.init_from_checkpoints(state_dict, p_scorer, q_scorer, generator,
+        model = ELBOLossSystem.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, generator_constructor,
                                                      expdir=curexpdir, lr=args.lr,
                                                      invert_st_order=args.invert_st_order,
                                                      add_p_scores_to_q = args.add_p_scores_to_q,
@@ -1790,9 +1814,9 @@ if __name__ == '__main__':
     elif args.loss_type == 'Reconstruction':
         if args.generator_checkpoint:
             state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
-            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, generator, expdir=curexpdir, lr=args.lr)
+            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, generator_constructor, expdir=curexpdir, lr=args.lr)
         else:
-            model = OnlyGeneratorTraining(generator, expdir=curexpdir, lr=args.lr)
+            model = OnlyGeneratorTraining(generator_constructor, expdir=curexpdir, lr=args.lr)
     elif args.loss_type == 'KLD' or args.loss_type=='PosNeg':
         if args.loss_type == 'KLD':
             loss_fn = KLDivergenceFn
@@ -1808,15 +1832,15 @@ if __name__ == '__main__':
             state_dict = OnlyRetrieverTraining.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint,
                 q_scorer_checkpoint=args.q_scorer_checkpoint)
-        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer, q_scorer, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None)
+        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None)
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
 
     secondary_training = args.loss_type in {'Reconstruction', 'KLD', 'PosNeg'}
     if args.loss_type == 'NLL':
-        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus)
+        train_dataset = Seq2SeqDataset(args.train_source_path, args.train_target_path, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size)
-        val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus)
+        val_dataset = Seq2SeqDataset(args.val_source_path, args.val_target_path, worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size)
     elif args.loss_type in {'Marginalized', 'FiDNLL'}:
         assert args.doc_sampler in {'SimpleDocumentSampler', 'TopKDocumentSampler'}
@@ -1827,20 +1851,20 @@ if __name__ == '__main__':
             doc_sampler = TopKDocumentSampler(args.n_sampled_docs_train)
             val_doc_sampler = TopKDocumentSampler(args.n_sampled_docs_valid)
 
-        train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus)
+        train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'Reconstruction':
         assert args.doc_sampler in {'PosteriorDocumentSampler'}
         doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training, include_unrelated=False)
+                                  yield_scores=secondary_training, include_unrelated=False, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
                                 args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
-                                yield_scores = secondary_training, include_unrelated=False)
+                                yield_scores = secondary_training, include_unrelated=False, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
         assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler'}
@@ -1856,11 +1880,11 @@ if __name__ == '__main__':
             assert False
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training)
+                                  yield_scores=secondary_training, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
-                               worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training)
+                               worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
@@ -1882,11 +1906,11 @@ if __name__ == '__main__':
 
         train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                   args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training)
+                                  yield_scores=secondary_training, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
-                               worker_id=local_rank, n_workers=args.gpus)
+                               worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     #trainer = Trainer(gpus=args.gpus, logger=logger, default_root_dir=curexpdir, track_grad_norm=2,
