@@ -1464,7 +1464,7 @@ class KLDivergenceFn(torch.nn.Module):
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
         q_log_probs = torch.nn.functional.log_softmax(q_scores, dim=1)
         reverse_kl_regularization = (q_probs * (q_log_probs - p_log_probs)).sum()
-        if self.forward_kl > 0:
+        if self.forward_kl_weight > 0:
             forward_kl_regularization = (p_probs * (p_log_probs - q_log_probs)).sum()
             loss = reverse_kl + self.forward_kl_weight*forward_kl_regularization
         else:
@@ -1479,15 +1479,15 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.q_scorer = q_scorer_constructor()
         self.q_scorer.eval()
         self.loss_fn_constructor = loss_fn
+        self.forward_kl = forward_kl
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
         self.use_precomputed_scores = use_precomputed_scores
         print('use_precomputed_scores=',self.use_precomputed_scores)
-        self.forward_kl = forward_kl
 
     def set_loss_fn(self):
-        self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer, forward_kl=forward_kl)
+        self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer, forward_kl=self.forward_kl)
 
 
     @staticmethod
