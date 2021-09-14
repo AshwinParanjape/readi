@@ -1431,23 +1431,26 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
 @dataclass
 class KLDivergence():
     loss: Union[float, torch.Tensor]
+    reverse_kl: torch.Tensor
+    forward_kl: torch.Tensor
     p_scores: torch.Tensor
     q_scores: torch.Tensor
 
     @property
     def metrics(self):
-        return [('loss', self.loss)]
+        return [('loss', self.loss), ('reverse_kl', reverse_kl), ('forward_kl', forward_kl), ]
 
     @property
     def intermediate_values(self):
         return [('p_scores', self.p_scores), ('q_scores', self.q_scores)]
 
 class KLDivergenceFn(torch.nn.Module):
-    def __init__(self, p_scorer: ColBERTScorer, q_scorer: ColBERTScorer=None, invert_st_order=False):
+    def __init__(self, p_scorer: ColBERTScorer, q_scorer: ColBERTScorer=None, invert_st_order=False, forward_kl=0):
         super().__init__()
         self.p_scorer = p_scorer
         self.q_scorer = q_scorer
         self.invert_st_order = invert_st_order
+        self.forward_kl_weight = forward_kl
 
     def forward(self, sources: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor=None, targets:List[str]=None):
         if q_scores is None:
@@ -1460,12 +1463,17 @@ class KLDivergenceFn(torch.nn.Module):
         p_scores = self.p_scorer(sources, batched_docs)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
         q_log_probs = torch.nn.functional.log_softmax(q_scores, dim=1)
-        kl_regularization = (q_probs * (q_log_probs - p_log_probs)).sum()
-        return KLDivergence(kl_regularization, p_scores, q_scores)
+        reverse_kl_regularization = (q_probs * (q_log_probs - p_log_probs)).sum()
+        if self.forward_kl > 0:
+            forward_kl_regularization = (p_probs * (p_log_probs - q_log_probs)).sum()
+            loss = reverse_kl + self.forward_kl_weight*forward_kl_regularization
+        else:
+            loss = reverse_kl_regularization
+        return KLDivergence(loss, reverse_kl_regularization, forward_kl_regularization, p_scores, q_scores)
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer_constructor, q_scorer_constructor, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True):
+    def __init__(self, p_scorer_constructor, q_scorer_constructor, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True, forward_kl=0):
         super().__init__()
         self.p_scorer = p_scorer_constructor()
         self.q_scorer = q_scorer_constructor()
@@ -1476,9 +1484,10 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.expdir = expdir
         self.use_precomputed_scores = use_precomputed_scores
         print('use_precomputed_scores=',self.use_precomputed_scores)
+        self.forward_kl = forward_kl
 
     def set_loss_fn(self):
-        self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer)
+        self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer, forward_kl=forward_kl)
 
 
     @staticmethod
@@ -1654,6 +1663,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--q_scorer_hidden_dropout_prob', type=float, default=0.1)
     training_args_group.add_argument('--q_scorer_attention_probs_dropout_prob', type=float, default=0.1)
     training_args_group.add_argument('--FiD_rescored_top_k', type=int, help="During FiDNLL training, sample n_sampled_docs but then rescore and keep FiD_rescored_top_k documents from that set.")
+    training_args_group.add_argument('--forward_kl', type=float, default=0.0, help="Weight of forward KL term")
 
 
     Experiment.add_argument_group(parser)
@@ -1832,7 +1842,7 @@ if __name__ == '__main__':
             state_dict = OnlyRetrieverTraining.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint,
                 q_scorer_checkpoint=args.q_scorer_checkpoint)
-        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None)
+        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None, forward_kl=args.forward_kl)
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
 
