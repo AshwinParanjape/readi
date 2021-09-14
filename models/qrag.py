@@ -1467,7 +1467,7 @@ class KLDivergenceFn(torch.nn.Module):
         if self.forward_kl_weight > 0:
             p_probs = stable_softmax(p_scores, dim=1)
             forward_kl_regularization = (p_probs * (p_log_probs - q_log_probs)).sum()
-            loss = reverse_kl + self.forward_kl_weight*forward_kl_regularization
+            loss = reverse_kl_regularization + self.forward_kl_weight*forward_kl_regularization
         else:
             loss = reverse_kl_regularization
         return KLDivergence(loss, reverse_kl_regularization, forward_kl_regularization, p_scores, q_scores)
