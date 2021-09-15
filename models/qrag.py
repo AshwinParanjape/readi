@@ -1468,10 +1468,10 @@ class KLDivergenceFn(torch.nn.Module):
             p_probs = stable_softmax(p_scores, dim=1)
             forward_kl_regularization = (p_probs * (p_log_probs - q_log_probs)).sum()
             loss = reverse_kl_regularization + self.forward_kl_weight*forward_kl_regularization
-            return KLDivergence(loss, reverse_kl_regularization, 0, p_scores, q_scores)
+            return KLDivergence(loss, reverse_kl_regularization, forward_kl_regularization, p_scores, q_scores)
         else:
             loss = reverse_kl_regularization
-            return KLDivergence(loss, reverse_kl_regularization, forward_kl_regularization, p_scores, q_scores)
+            return KLDivergence(loss, reverse_kl_regularization, 0, p_scores, q_scores)
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
@@ -1529,7 +1529,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         return output.loss
 
     def my_log(self, loop, batch_idx, batch, output):
-        for name, value in [('loss', output.loss)]:
+        for name, value in [('loss', output.loss), ('reverse_kl', output.reverse_kl),('forward_kl', output.forward_kl) ]:
             log_value(Path(self.expdir) / Path('metrics.tsv'), loop, self.current_epoch, batch_idx, name, value)
 
         for fname, values in [('p_scores.tsv', output.p_scores),
