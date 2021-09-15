@@ -1468,9 +1468,10 @@ class KLDivergenceFn(torch.nn.Module):
             p_probs = stable_softmax(p_scores, dim=1)
             forward_kl_regularization = (p_probs * (p_log_probs - q_log_probs)).sum()
             loss = reverse_kl_regularization + self.forward_kl_weight*forward_kl_regularization
+            return KLDivergence(loss, reverse_kl_regularization, 0, p_scores, q_scores)
         else:
             loss = reverse_kl_regularization
-        return KLDivergence(loss, reverse_kl_regularization, forward_kl_regularization, p_scores, q_scores)
+            return KLDivergence(loss, reverse_kl_regularization, forward_kl_regularization, p_scores, q_scores)
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
