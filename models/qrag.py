@@ -1726,7 +1726,7 @@ if __name__ == '__main__':
     else:
         trainer = Trainer(gpus=args.gpus, logger=logger, track_grad_norm=args.track_grad_norm, gradient_clip_val=args.gradient_clip_val,
                           default_root_dir=curexpdir,
-                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches)#, plugins = DDPPlugin(find_unused_parameters=True))
+                          accumulate_grad_batches=args.accumulate_grad_batches, accelerator='ddp', max_epochs=args.max_epochs, callbacks=[checkpoint_callback], limit_train_batches=args.limit_train_batches, limit_val_batches=args.limit_val_batches, plugins = DDPPlugin(find_unused_parameters=True))
 
 
     # Create model constructors that are then passed into Pytorch Lightning modules and used in their initialization functions
