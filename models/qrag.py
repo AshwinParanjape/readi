@@ -1879,20 +1879,24 @@ if __name__ == '__main__':
                                 yield_scores = secondary_training, include_unrelated=False, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler'}
-        if args.doc_sampler == 'GuidedDocumentSampler':
-            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
-        elif args.doc_sampler == 'RankPNDocumentSampler':
-            doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
-        elif args.doc_sampler == 'PosteriorDocumentSampler':
-            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
-        elif args.doc_sampler == 'PurePosteriorDocumentSampler':
-            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler'}
+        if args.doc_sampler == 'PriorDocumentSampler':
+            doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
         else:
-            assert False
-        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
-                                  args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training, subsample=args.train_subsample)
+            if args.doc_sampler == 'GuidedDocumentSampler':
+                doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
+            elif args.doc_sampler == 'RankPNDocumentSampler':
+                doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
+            elif args.doc_sampler == 'PosteriorDocumentSampler':
+                doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
+            elif args.doc_sampler == 'PurePosteriorDocumentSampler':
+                doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            else:
+                assert False
+            train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                      args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                      yield_scores=secondary_training, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
@@ -1900,26 +1904,31 @@ if __name__ == '__main__':
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler', 'PurePosteriorDocumentSampler'}
-        if args.doc_sampler == 'GuidedDocumentSampler':
-            doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
-        elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
-            doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-        elif args.doc_sampler == 'RankPNDocumentSampler':
-            doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
-        elif args.doc_sampler == 'PosteriorDocumentSampler':
-            doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train,  temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
-        elif args.doc_sampler == 'PosteriorTopKDocumentSampler':
-            doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
-        elif args.doc_sampler == 'PurePosteriorDocumentSampler':
-            doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
-        else:
-            assert False
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler'}
+        if args.doc_sampler == 'PriorDocumentSampler':
+            doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
 
-        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
-                                  args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training, subsample=args.train_subsample)
-        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+        else:
+            if args.doc_sampler == 'GuidedDocumentSampler':
+                doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
+            elif args.doc_sampler == 'GuidedNoIntersectionDocumentSampler':
+                doc_sampler = GuidedNoIntersectionDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            elif args.doc_sampler == 'RankPNDocumentSampler':
+                doc_sampler = RankPNDocumentSampler(args.n_sampled_docs_train)
+            elif args.doc_sampler == 'PosteriorDocumentSampler':
+                doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train,  temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            elif args.doc_sampler == 'PosteriorTopKDocumentSampler':
+                doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
+            elif args.doc_sampler == 'PurePosteriorDocumentSampler':
+                doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
+            else:
+                assert False
+
+            train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                      args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                      yield_scores=secondary_training, subsample=args.train_subsample)
+            train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
         val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
                                worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
