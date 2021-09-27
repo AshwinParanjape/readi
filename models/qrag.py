@@ -547,6 +547,25 @@ class GuidedDocumentSampler(DocumentSampler):
 
         return mixed_samples
 
+class MixedPriorPosteriorDocumentSampler(DocumentSampler):
+    def __init__(self, n, prior_probability=0.5, temperature=1, top_k=None):
+        self.n = n
+        self.temperature=temperature
+        self.prior_probability = prior_probability
+        if top_k: assert n<=top_k, f"top_k={top_k} should at least be n={n}"
+        self.top_k = top_k
+        self.sampler = SimpleDocumentSampler(self.n, self.temperature, self.top_k)
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
+        p_docs = retrievals[(retrievals['score_p'].notna())].copy()
+        q_docs = retrievals[(retrievals['score_q'].notna())].copy()
+        if random.random() > self.prior_probability:
+            # Sample from q_docs
+            return self.sampler(q_docs)
+        else:
+            return self.sampler(p_docs)
+
 class PosteriorDocumentSampler(DocumentSampler):
     def __init__(self, n, temperature=1, top_k=None):
         self.n = n
@@ -1649,7 +1668,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--accumulate_grad_batches', type=int, default=16, help='Accumulate gradients for given number of batches')
     training_args_group.add_argument('--gpus', type=int, default=1, help='Number of gpus to use')
     training_args_group.add_argument('--doc_sampler', type=str,
-                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}, PosteriorDocumentSampler(Reconstruction)')
+                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}, PosteriorDocumentSampler(Reconstruction), MixedPriorPosteriorDocumentSampler(ELBO)')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
@@ -1879,7 +1898,7 @@ if __name__ == '__main__':
                                 yield_scores = secondary_training, include_unrelated=False, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler'}
         if args.doc_sampler == 'PriorDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
             train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
@@ -1892,6 +1911,8 @@ if __name__ == '__main__':
                 doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
             elif args.doc_sampler == 'PurePosteriorDocumentSampler':
                 doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            elif args.doc_sampler == 'MixedPriorPosteriorDocumentSampler':
+                doc_sampler = MixedPriorPosteriorDocumentSampler(args.n_sampled_docs_train, prior_probability=0.5, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
             else:
                 assert False
             train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
@@ -1904,7 +1925,7 @@ if __name__ == '__main__':
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     elif args.loss_type in {'ELBO',  'PosNeg'} :
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'GuidedNoIntersectionDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PosteriorTopKDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler'}
         if args.doc_sampler == 'PriorDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
             train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
@@ -1922,6 +1943,9 @@ if __name__ == '__main__':
                 doc_sampler = PosteriorTopKDocumentSampler(args.n_sampled_docs_train)
             elif args.doc_sampler == 'PurePosteriorDocumentSampler':
                 doc_sampler = PurePosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
+            elif args.doc_sampler == 'MixedPriorPosteriorDocumentSampler':
+                doc_sampler = MixedPriorPosteriorDocumentSampler(args.n_sampled_docs_train, prior_probability=0.5, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
+
             else:
                 assert False
 
