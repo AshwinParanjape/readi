@@ -558,12 +558,14 @@ class MixedPriorPosteriorDocumentSampler(DocumentSampler):
 
     def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
         # retrievals has columns ['qid', 'pid', 'score_p', 'score_q', 'doc_text', 'title', 'text']
-        p_docs = retrievals[(retrievals['score_p'].notna())].copy()
-        q_docs = retrievals[(retrievals['score_q'].notna())].copy()
         if random.random() > self.prior_probability:
             # Sample from q_docs
+            q_docs = retrievals[(retrievals['score_q'].notna())].copy()
+            q_docs['score'] = q_docs['score_q']
             return self.sampler(q_docs)
         else:
+            p_docs = retrievals[(retrievals['score_p'].notna())].copy()
+            p_docs['score'] = p_docs['score_p']
             return self.sampler(p_docs)
 
 class PosteriorDocumentSampler(DocumentSampler):
