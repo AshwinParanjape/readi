@@ -1644,7 +1644,7 @@ if __name__ == '__main__':
     base_path = Path('/u/scr/ashwinp/research/readi')
     rerank_exp_base_path = Path('/scr/biggest/ashwinp/experiments/colbert-rerank/')
     scorer_group = parser.add_argument_group(title='scorer (ColBERT) args')
-    scorer_group.add_argument('--query_maxlengenerator', dest='query_maxlen_generator', default=64, type=int)
+    scorer_group.add_argument('--query_maxlen_generator', dest='query_maxlen_generator', default=64, type=int)
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
     scorer_group.add_argument('--label_maxlen', dest='label_maxlen', default=64, type=int)
