@@ -1407,10 +1407,12 @@ class ReconstructionLossFn(torch.nn.Module):
 
 class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
     # We assume that the Q scorer is fixed and hence doesn't need to be run
-    def __init__(self, generator_constructor, q_scorer_constructor, expdir='', lr=1e-3, use_precomputed_scores=True):
+    def __init__(self, generator_constructor, q_scorer_constructor, expdir='', lr=1e-3, invert_st_order=False, use_precomputed_scores=True):
         super().__init__()
         self.generator = generator_constructor()
         self.q_scorer = q_scorer_constructor()
+        self.invert_st_order = invert_st_order
+        self.use_precomputed_scores=use_precomputed_scores
         self.q_scorer.eval()
         self.lr = lr
         self.expdir = expdir
@@ -1420,14 +1422,15 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.setup_tsv_files()
 
     def set_loss_fn(self):
-        self.loss_fn = ReconstructionLossFn(self.generator, self.q_scorer)
+        self.loss_fn = ReconstructionLossFn(self.generator, self.q_scorer, invert_st_order=self.invert_st_order)
 
     @staticmethod
     def extract_state_dict_from_checkpoints(generator_checkpoint, q_scorer_checkpoint=None):
-        generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
-        state_dict = filter_state_dict(generator_checkpoint, 'generator')
-        state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
-        if q_scorer_checkpoint:
+        state_dict = {}
+        if generator_checkpoint is not None:
+            generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(generator_checkpoint, 'generator'))
+        if q_scorer_checkpoint is not None:
             q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
             state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
         return state_dict
@@ -1469,7 +1472,7 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.generator..parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.generator.parameters(), lr=self.lr)
         return optimizer
 
 @dataclass
@@ -1519,13 +1522,14 @@ class KLDivergenceFn(torch.nn.Module):
 
 
 class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, p_scorer_constructor, q_scorer_constructor, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True, forward_kl=0):
+    def __init__(self, p_scorer_constructor, q_scorer_constructor, loss_fn, expdir='', lr=1e-3, use_precomputed_scores=True, invert_st_order=False, forward_kl=0):
         super().__init__()
         self.p_scorer = p_scorer_constructor()
         self.q_scorer = q_scorer_constructor()
         self.q_scorer.eval()
         self.loss_fn_constructor = loss_fn
         self.forward_kl = forward_kl
+        self.invert_st_order = invert_st_order
         self.set_loss_fn()
         self.lr = lr
         self.expdir = expdir
@@ -1533,7 +1537,7 @@ class OnlyRetrieverTraining(pl.LightningModule, InheritableCheckpointMixin):
         print('use_precomputed_scores=',self.use_precomputed_scores)
 
     def set_loss_fn(self):
-        self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer, forward_kl=self.forward_kl)
+        self.loss_fn = self.loss_fn_constructor(self.p_scorer, self.q_scorer, invert_st_order=self.invert_st_order, forward_kl=self.forward_kl)
 
 
     @staticmethod
@@ -1791,7 +1795,7 @@ if __name__ == '__main__':
                                           )
 
     # Create q scorer
-    if args.loss_type in {'ELBO', 'FiDNLL', 'KLD'}:
+    if args.loss_type in {'ELBO', 'FiDNLL', 'KLD', 'Reconstruction'}:
         if args.q_scorer_class == 'ColBERTScorer':
             q_scorer_class = ColBERTScorer
         elif args.q_scorer_class == 'BERTScorer':
@@ -1868,11 +1872,11 @@ if __name__ == '__main__':
                                                      KLD_weight=args.KLD_weight,
                                                      )
     elif args.loss_type == 'Reconstruction':
-        if args.generator_checkpoint:
-            state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint)
-            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, generator_constructor, expdir=curexpdir, lr=args.lr)
+        if args.generator_checkpoint or args.q_scorer_checkpoint:
+            state_dict = OnlyGeneratorTraining.extract_state_dict_from_checkpoints(generator_checkpoint=args.generator_checkpoint, q_scorer_checkpoint=args.q_scorer_checkpoint)
+            model = OnlyGeneratorTraining.init_from_checkpoints(state_dict, generator_constructor, q_scorer_constructor, expdir=curexpdir, lr=args.lr, invert_st_order=args.invert_st_order, use_precomputed_scores=args.q_scorer_checkpoint is None)
         else:
-            model = OnlyGeneratorTraining(generator_constructor, expdir=curexpdir, lr=args.lr)
+            model = OnlyGeneratorTraining(generator_constructor, q_scorer_constructor, expdir=curexpdir, lr=args.lr, invert_st_order=args.invert_st_order, use_precomputed_scores=args.q_scorer_checkpoint is None)
     elif args.loss_type == 'KLD' or args.loss_type=='PosNeg':
         if args.loss_type == 'KLD':
             loss_fn = KLDivergenceFn
@@ -1888,7 +1892,7 @@ if __name__ == '__main__':
             state_dict = OnlyRetrieverTraining.extract_state_dict_from_colbert_checkpoints(
                 p_scorer_checkpoint=args.p_scorer_checkpoint,
                 q_scorer_checkpoint=args.q_scorer_checkpoint)
-        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None, forward_kl=args.forward_kl)
+        model = OnlyRetrieverTraining.init_from_checkpoints(state_dict, p_scorer_constructor, q_scorer_constructor, loss_fn=loss_fn, expdir=curexpdir, lr=args.lr, use_precomputed_scores=args.q_scorer_checkpoint is None, invert_st_order=args.invert_st_order, forward_kl=args.forward_kl)
     else:
             assert False, "loss_type not in {NLL, Marginalized, ELBO, Reconstruction, KLD, PosNeg}"
 
@@ -1912,15 +1916,24 @@ if __name__ == '__main__':
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'Reconstruction':
-        assert args.doc_sampler in {'PosteriorDocumentSampler'}
-        doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, top_k=args.docs_top_k)
-        train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
-                                  args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
-                                  yield_scores=secondary_training, include_unrelated=False, subsample=args.train_subsample)
+        assert args.doc_sampler in {'PosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler'}
+        if args.doc_sampler == 'PriorDocumentSampler':
+            doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
+            train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
+        else: 
+            if args.doc_sampler == 'PosteriorDocumentSampler':
+                doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
+            elif args.doc_sampler == 'MixedPriorPosteriorDocumentSampler':
+                doc_sampler = MixedPriorPosteriorDocumentSampler(args.n_sampled_docs_train, prior_probability=0.5, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
+            else: 
+                assert False
+            train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                      args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                      yield_scores=secondary_training, include_unrelated=False, subsample=args.train_subsample)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-        val_dataset = PQDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages,
-                                args.val_q_ranked_passages, doc_sampler, worker_id = local_rank, n_workers = args.gpus,
-                                yield_scores = secondary_training, include_unrelated=False, subsample=args.val_subsample)
+        val_doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_valid)
+        val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler,
+                               worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
         assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler'}
