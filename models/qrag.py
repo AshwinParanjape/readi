@@ -1383,12 +1383,22 @@ class ReconstructionLoss():
 
 
 class ReconstructionLossFn(torch.nn.Module):
-    def __init__(self, generator: Generator):
+    def __init__(self, generator: Generator, q_scorer: ColBERTScorer=None, invert_st_order=False):
         super().__init__()
         self.generator = generator
+        self.q_scorer = q_scorer
         self.generator_nll = LM_NLL(self.generator)
+        self.invert_st_order = invert_st_order
 
-    def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor):
+    def forward(self, sources: List[str], targets: List[str], batched_docs: List[List[str]], q_scores: torch.Tensor=None):
+        if q_scores is None:
+            if self.invert_st_order:
+                st_text = [t + ' | ' +s for s, t in zip(sources, targets)]
+            else:
+                st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
+            q_scores = self.q_scorer(st_text, batched_docs)
+
+
         q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
 
@@ -1397,9 +1407,11 @@ class ReconstructionLossFn(torch.nn.Module):
 
 class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
     # We assume that the Q scorer is fixed and hence doesn't need to be run
-    def __init__(self, generator_constructor, expdir='', lr=1e-3):
+    def __init__(self, generator_constructor, q_scorer_constructor, expdir='', lr=1e-3, use_precomputed_scores=True):
         super().__init__()
         self.generator = generator_constructor()
+        self.q_scorer = q_scorer_constructor()
+        self.q_scorer.eval()
         self.lr = lr
         self.expdir = expdir
         self.set_loss_fn()
@@ -1408,23 +1420,34 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
         self.setup_tsv_files()
 
     def set_loss_fn(self):
-        self.loss_fn = ReconstructionLossFn(self.generator)
+        self.loss_fn = ReconstructionLossFn(self.generator, self.q_scorer)
 
     @staticmethod
-    def extract_state_dict_from_checkpoints(generator_checkpoint):
+    def extract_state_dict_from_checkpoints(generator_checkpoint, q_scorer_checkpoint=None):
         generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
         state_dict = filter_state_dict(generator_checkpoint, 'generator')
         state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
+        if q_scorer_checkpoint:
+            q_scorer_checkpoint = torch.load(q_scorer_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(q_scorer_checkpoint, 'q_scorer'))
         return state_dict
 
     def training_step(self, batch, batch_idx):
         # ['qid': List[int], 'source':List[str], 'target':List[str], 'doc_ids': List[List[int]], 'doc_texts': List[List[str]]]
-        output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores'])
+        self.q_scorer.eval()
+        if self.use_precomputed_scores:
+            output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores'])
+        else:
+            output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
         self.my_log('train', batch_idx, batch, output)
         return output.loss
 
     def validation_step(self, batch, batch_idx):
-        output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores'])
+        self.q_scorer.eval()
+        if self.use_precomputed_scores:
+            output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'], batch['doc_scores'])
+        else:
+            output: ReconstructionLoss = self.loss_fn(batch['source'], batch['target'], batch['doc_texts'])
         self.my_log('val', batch_idx, batch, output)
         return output.loss
 
@@ -1446,7 +1469,7 @@ class OnlyGeneratorTraining(pl.LightningModule, InheritableCheckpointMixin):
             f.write('stage\tepoch\tbatch_idx\tkey\tvalue\n')
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.generator..parameters(), lr=self.lr)
         return optimizer
 
 @dataclass
