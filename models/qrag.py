@@ -1640,6 +1640,7 @@ if __name__ == '__main__':
     base_path = Path('/u/scr/ashwinp/research/readi')
     rerank_exp_base_path = Path('/scr/biggest/ashwinp/experiments/colbert-rerank/')
     scorer_group = parser.add_argument_group(title='scorer (ColBERT) args')
+    scorer_group.add_argument('--query_maxlengenerator', dest='query_maxlen_generator', default=64, type=int)
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=180, type=int)
     scorer_group.add_argument('--label_maxlen', dest='label_maxlen', default=64, type=int)
@@ -1815,10 +1816,10 @@ if __name__ == '__main__':
         _generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         if args.loss_type == 'FiDNLL':
             generator_constructor = lambda: FiDGenerator(_generator_constructor, _generator_tokenizer_constructor,
-                input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
+                input_maxlen=args.query_maxlen_generator, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
         else:
             generator_constructor = lambda: Generator(_generator_constructor, _generator_tokenizer_constructor,
-                    input_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
+                    input_maxlen=args.query_maxlen_generator, doc_maxlen=args.doc_maxlen, output_maxlen=args.label_maxlen)
 
     if args.add_p_scores_to_q: assert args.loss_type == 'ELBO'
     # Create models
