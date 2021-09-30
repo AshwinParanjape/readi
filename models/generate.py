@@ -18,7 +18,7 @@ from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem,
 
 
 class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
-    def __init__(self, query_maxlen=64, doc_maxlen=256, label_maxlen=64, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
+    def __init__(self, query_maxlen_generator=64, query_maxlen=64, doc_maxlen=256, label_maxlen=64, expdir='', truncate_query_from_start=False, n_samples_per_doc=8,
             baseline_generator: Generator=None, normalize_scorer_embeddings=False,
             query_sum_topk=None, query_sum_window=None, scorer_agg_fn=torch.sum, FiD=False,
                  **generation_kwargs, ):
@@ -31,9 +31,9 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
         if FiD:
-            self.generator = FiDGenerator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
+            self.generator = FiDGenerator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen_generator, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         else:
-            self.generator = Generator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
+            self.generator = Generator(self._generator, self._generator_tokenizer_constructor, input_maxlen=query_maxlen_generator, doc_maxlen=doc_maxlen, output_maxlen=label_maxlen)
         self.p_scorer = ColBERTScorer.from_pretrained('bert-base-uncased',
                                           truncate_query_from_start = truncate_query_from_start,
                                           query_maxlen=query_maxlen,
@@ -146,6 +146,7 @@ def generate():
     rerank_exp_base_path = Path('/scr/biggest/ashwinp/experiments/colbert-rerank/')
     qtraining_exp_base_path = Path('/scr/biggest/ashwinp/experiments/qtraining/')
     scorer_group = parser.add_argument_group(title='scorer (ColBERT) args')
+    scorer_group.add_argument('--query_maxlen_generator', dest='query_maxlen_generator', default=64, type=int)
     scorer_group.add_argument('--query_maxlen', dest='query_maxlen', default=64, type=int)
     scorer_group.add_argument('--doc_maxlen', dest='doc_maxlen', default=184, type=int)
     scorer_group.add_argument('--label_maxlen', dest='label_maxlen', default=64, type=int)
@@ -224,6 +225,7 @@ def generate():
     else:
         baseline_model = None
     model = TargetGenerator.init_from_checkpoints(state_dict, expdir=curexpdir,
+            query_maxlen_generator=args.query_maxlen_generator,
             query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen, label_maxlen=args.label_maxlen,
             truncate_query_from_start=args.truncate_query_from_start,
             n_samples_per_doc = args.n_samples_per_doc,
