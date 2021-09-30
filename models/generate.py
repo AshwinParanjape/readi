@@ -26,7 +26,7 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
         self.n_samples_per_doc = n_samples_per_doc
         self.generation_kwargs = generation_kwargs
         self.expdir = expdir
-        self._generator = BartForConditionalGeneration.from_pretrained("facebook/bart-base")#, force_bos_token_to_be_generated=True)
+        self._generator = lambda: BartForConditionalGeneration.from_pretrained("facebook/bart-base")#, force_bos_token_to_be_generated=True)
         self._generator_tokenizer_constructor = lambda: BartTokenizer.from_pretrained("facebook/bart-base")
         #self._generator_tokenizer.add_tokens([DOC_TOKEN, TEXT_TOKEN])
         #self.generator = Generator(self._generator, self._generator_tokenizer, truncate_from_start=truncate_query_from_start)
@@ -211,6 +211,8 @@ def generate():
     #generator.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('generator')})
     #p_scorer = ColBERTScorer.load_state_dict(state_dict={k:v for k, v in state_dict.items() if k.startswith('p_scorer')})
     #model = TargetGenerator(generator, p_scorer, expdir=curexpdir, strict=False)
+
+
     normalize_scorer_embeddings=not args.unnormalized_scorer_embeddings
     if args.scorer_agg_fn == 'sum':
         scorer_agg_fn = torch.sum
