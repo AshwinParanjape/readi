@@ -303,9 +303,8 @@ class ClosedSetRetrievals():
                 df_reader = pd.read_csv(file, sep='\t', chunksize=100000,
                                         usecols=[0,1,2,3,4,5],
                                         names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'], header=0,
-                                        dtype={'qid': int, 'pid': int, 'rank': int, 'score': float, 'doc_text':str,
-                                               'title':str} ,
-                                        na_filter=False)
+                                        dtype={'qid': int, 'pid': int, 'doc_text':str,
+                                               'title':str} ,)
             else:
                 # Missing the title field
                 df_reader = pd.read_csv(file, sep='\t', chunksize=100000,
@@ -317,6 +316,8 @@ class ClosedSetRetrievals():
 
             for chunk_df in df_reader:
                 for qid, retrievals in chunk_df.groupby('qid'):
+                    retrievals['rank'] = retrievals['rank'].fillna('-1').astype('int')
+                    retrievals['score'] = retrievals['score'].fillna('0').astype('float')
                     if n_cols == 6:
                         retrievals['text'] = retrievals['title'].str.cat(retrievals['doc_text'], sep=f' {TEXT_TOKEN} ')
                     else:
@@ -449,6 +450,27 @@ class GuidedNoIntersectionDocumentSampler(DocumentSampler):
             q_docs['score'] = q_docs['score_q']
             extra_samples = SimpleDocumentSampler(diff, self.temperature, self.top_k)(q_docs)
             mixed_samples = pd.concat([mixed_samples, extra_samples])
+
+        return mixed_samples
+
+class OracleDocumentSampler(DocumentSampler):
+    def __init__(self, n, kP=10):
+        self.n = n
+        self.kP = kP
+        self.negatives_sampler = RandomDocumentSampler(self.n-1)
+
+    def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
+        print(retrievals)
+        oracle_positive = retrievals[(retrievals['rank_q'].notna()) & (retrievals['rank_q']!=-1)].copy()
+        assert len(oracle_positive) <= 1
+        negatives = retrievals[(retrievals['rank_p'].notna()) & (retrievals['rank_q'].isna())].sort_values('rank_p')[self.kP:].copy()
+        if len(oracle_positive) >= 1:
+            oracle_positive['score_q'] = 100000.0
+            negative_samples = self.negatives_sampler(negatives)
+        else:
+            negative_samples = RandomDocumentSampler(self.n)(negatives)
+        negative_samples['score_q'] = 0.0
+        mixed_samples = pd.concat([oracle_positive, negative_samples])
 
         return mixed_samples
 
@@ -730,11 +752,11 @@ class PQDataset(torch.utils.data.IterableDataset):
     def __iter__(self):
         # Important: doc_scores are the Q retriever scores
         for qid, (source, target, (p_qid, p_retrievals), (q_qid, q_retrievals)) in enumerate(zip(self.source['source'], self.target['target'], self.p_retrievals, self.q_retrievals)):
-            #assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
+            assert (qid == p_qid) and (qid == q_qid), (qid, p_qid, q_qid)
             if qid % self.n_workers == self.worker_id:  # This query belongs to this worker
                 if self.subsample < 1 and random.random() > self.subsample:
                     continue
-                merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=[c for c in q_retrievals.columns if c != 'score'], suffixes = ('_p', '_q'))
+                merged_retrievals = p_retrievals.merge(q_retrievals, how='outer', on=[c for c in q_retrievals.columns if c not in {'score', 'rank'}], suffixes = ('_p', '_q'))
                 sampled_retrievals = self.sampler(merged_retrievals, self.unrelated_retrievals)
                 #sampled_retrievals = self.sampler(merged_retrievals)
                 if sampled_retrievals is None:
@@ -1506,7 +1528,9 @@ class KLDivergenceFn(torch.nn.Module):
             else:
                 st_text = [s + ' | ' +t for s, t in zip(sources, targets)]
             q_scores = self.q_scorer(st_text, batched_docs)
-        q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
+        #Special case for missing oracle passages where the q_scores are all 0 (otherwise there is one 100000 and rest 0)
+
+        q_probs = (q_scores!=0).any(dim=1, keepdim=True)*stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
         p_scores = self.p_scorer(sources, batched_docs)
         p_log_probs = torch.nn.functional.log_softmax(p_scores, dim=1) #Shape: n_instances x n_docs
         q_log_probs = torch.nn.functional.log_softmax(q_scores, dim=1)
@@ -1670,6 +1694,7 @@ if __name__ == '__main__':
                         help='Path to train.target file, each line contains expected output from the generator')
     paths_group.add_argument('--train_p_ranked_passages', type=str, default=(rerank_exp_base_path / '10/ranking_passages.tsv').as_posix() ,
                         help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
+    paths_group.add_argument('--train_oracle_passages', type=str, help='Path to train.provenance, used by OracleSampler to use gold_passages for retriever training')
     paths_group.add_argument('--train_q_ranked_passages', type=str, default=(rerank_exp_base_path / '11/ranking_passages.tsv' ).as_posix(),
                         help='Path to ranking_passages.tsv, retrieved and ranked using q-scorer')
 
@@ -1698,7 +1723,7 @@ if __name__ == '__main__':
     training_args_group.add_argument('--accumulate_grad_batches', type=int, default=16, help='Accumulate gradients for given number of batches')
     training_args_group.add_argument('--gpus', type=int, default=1, help='Number of gpus to use')
     training_args_group.add_argument('--doc_sampler', type=str,
-                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}, PosteriorDocumentSampler(Reconstruction), MixedPriorPosteriorDocumentSampler(ELBO)')
+                                     help='Sampler to use during training: {SimpleDocumentSampler(Marginalized), GuidedDocumentSampler(ELBO), GuidedNoIntersectionSampler(ELBO), RankPNDocumentSampler(ELBO)}, PosteriorDocumentSampler(Reconstruction), MixedPriorPosteriorDocumentSampler(ELBO), OracleDocumentSampler(KLD)')
     training_args_group.add_argument('--max_epochs', type=int, default=10, help="Trainer stops training after max_epochs")
     training_args_group.add_argument('--limit_train_batches', default=1.0, type=int, help="Limits number of training batches per epoch. Workaround for some bug where skipped instances reduces number of batches leading pytorch lightning to not detect end of epoch")
     training_args_group.add_argument('--limit_val_batches', default=1.0, type=int, help="Limits number of validation batches per epoch.")
@@ -1921,12 +1946,12 @@ if __name__ == '__main__':
         if args.doc_sampler == 'PriorDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
             train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
-        else: 
+        else:
             if args.doc_sampler == 'PosteriorDocumentSampler':
                 doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
             elif args.doc_sampler == 'MixedPriorPosteriorDocumentSampler':
                 doc_sampler = MixedPriorPosteriorDocumentSampler(args.n_sampled_docs_train, prior_probability=0.5, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
-            else: 
+            else:
                 assert False
             train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
                                       args.train_q_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
@@ -1937,10 +1962,16 @@ if __name__ == '__main__':
                                worker_id=local_rank, n_workers=args.gpus, yield_scores=secondary_training, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type in {'KLD'}:
-        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler'}
+        assert args.doc_sampler in {'GuidedDocumentSampler', 'RankPNDocumentSampler', 'PosteriorDocumentSampler', 'PurePosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler', 'OracleDocumentSampler'}
         if args.doc_sampler == 'PriorDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
             train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
+        elif args.doc_sampler == 'OracleDocumentSampler':
+            doc_sampler = OracleDocumentSampler(args.n_sampled_docs_train)
+            train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                      args.train_oracle_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                      yield_scores=secondary_training, subsample=args.train_subsample)
+
         else:
             if args.doc_sampler == 'GuidedDocumentSampler':
                 doc_sampler = GuidedDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k, )
