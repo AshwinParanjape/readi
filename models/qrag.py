@@ -28,6 +28,7 @@ import argparse
 from pathlib import Path
 from meticulous import Experiment
 from tqdm import tqdm
+import csv
 import random
 
 print(os.getcwd())
@@ -304,14 +305,14 @@ class ClosedSetRetrievals():
                                         usecols=[0,1,2,3,4,5],
                                         names=['qid', 'pid', 'rank', 'score', 'doc_text', 'title'], header=0,
                                         dtype={'qid': int, 'pid': int, 'doc_text':str,
-                                               'title':str} ,)
+                                               'title':str} ,quoting=csv.QUOTE_NONE)
             else:
                 # Missing the title field
                 df_reader = pd.read_csv(file, sep='\t', chunksize=100000,
                                         usecols=[0,1,2,3,4],
                                         names=['qid', 'pid', 'rank', 'score', 'doc_text'], header=0,
                                         dtype={'qid': int, 'pid': int, 'rank': int, 'score': float, 'doc_text':str} ,
-                                        na_filter=False)
+                                        na_filter=False,quoting=csv.QUOTE_NONE)
 
 
             for chunk_df in df_reader:
