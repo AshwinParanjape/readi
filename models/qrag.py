@@ -460,7 +460,6 @@ class OracleDocumentSampler(DocumentSampler):
         self.negatives_sampler = RandomDocumentSampler(self.n-1)
 
     def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
-        print(retrievals)
         oracle_positive = retrievals[(retrievals['rank_q'].notna()) & (retrievals['rank_q']!=-1)].copy()
         assert len(oracle_positive) <= 1
         negatives = retrievals[(retrievals['rank_p'].notna()) & (retrievals['rank_q'].isna())].sort_values('rank_p')[self.kP:].copy()
