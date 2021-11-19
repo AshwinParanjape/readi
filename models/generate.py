@@ -109,14 +109,13 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
             with open(Path(self.expdir)/ Path('generations.tsv'), 'a') as f:
                 for qid, source, target in zip(batch['qid'],sources, targets):
                     instance = {'qid': qid.item(), 'source': source, 'target': target}
-                    doc_gens = {'generator_output': []}
                     input_ids = generated_output.input_encoding['input_ids'][overall_doc_idx, :]
                     attention_mask = generated_output.input_encoding['attention_mask'][overall_doc_idx, :]
                     sequences = generated_output.sequences[overall_doc_idx*self.n_samples_per_doc:
                                                            (overall_doc_idx+1)*self.n_samples_per_doc, :]
                     strings = generated_output.strings[overall_doc_idx*self.n_samples_per_doc:
                                                            (overall_doc_idx+1)*self.n_samples_per_doc]
-                    doc_gens['generator_output'] = {
+                    instance['generator_output'] = {
                         'input_ids': input_ids.tolist(),
                         'attention_mask': attention_mask.tolist(),
                         'sequences': sequences.tolist(),
