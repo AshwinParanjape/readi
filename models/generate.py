@@ -13,7 +13,7 @@ from meticulous import Experiment
 from torch.utils.data.dataloader import default_collate
 from transformers import BartForConditionalGeneration, BartTokenizer
 
-from models.qrag import SimpleDocumentSampler, PDataset, MarginalizedLossSystem, Generator, FiDGenerator, ColBERTScorer, \
+from models.qrag import SimpleDocumentSampler, PDataset, Seq2SeqDataset, MarginalizedLossSystem, Generator, FiDGenerator, ColBERTScorer, \
     NLLLossSystem, TopKDocumentSampler, InheritableCheckpointMixin, filter_state_dict
 
 
@@ -63,15 +63,20 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
 
     @staticmethod
     def extract_state_dict_from_checkpoints(p_scorer_checkpoint, generator_checkpoint):
-        p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
         generator_checkpoint = torch.load(generator_checkpoint, torch.device('cpu'))
         state_dict = filter_state_dict(generator_checkpoint, 'generator')
         state_dict.update(filter_state_dict(generator_checkpoint, '_generator'))
-        state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
+        if p_scorer_checkpoint is not None:
+            p_scorer_checkpoint = torch.load(p_scorer_checkpoint, torch.device('cpu'))
+            state_dict.update(filter_state_dict(p_scorer_checkpoint, 'p_scorer'))
         return state_dict
 
     def forward(self, batch):
-        sources, _, batched_docs = batch['source'], batch['target'], batch['doc_texts']
+        sources, _ = batch['source'], batch['target']
+        try:
+            batched_docs = batch['doc_texts']
+        except:
+            batched_docs = None
         generation_output = self.generator.generate(sources, batched_docs, num_return_sequences=self.n_samples_per_doc,
                                                     **self.generation_kwargs)
         #batched_doc_scores = self.p_scorer(sources, batched_docs)
@@ -87,9 +92,12 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
         return generation_output
 
     def test_step(self, batch, batch_idx):
-        print(batch, batch_idx)
-        sources, targets, batched_docs = batch['source'], batch['target'], batch['doc_texts']
-        batched_doc_scores = self.p_scorer(sources, batched_docs)
+        sources, targets = batch['source'], batch['target']
+        if 'doc_texts' in batch:
+            batched_docs = batch['doc_texts']
+            batched_doc_scores = self.p_scorer(sources, batched_docs)
+        else:
+            batched_docs = None
         #doc_log_probs = torch.nn.functional.log_softmax(doc_scores, dim=1)
         generated_output = self(batch)
         if self.baseline_generator is not None:
@@ -97,36 +105,57 @@ class TargetGenerator(pl.LightningModule, InheritableCheckpointMixin):
         output_strings = generated_output.strings
         string_idx = 0
         overall_doc_idx = 0
-        with open(Path(self.expdir)/ Path('generations.tsv'), 'a') as f:
-            for qid, doc_ids, doc_scores, source, target, docs in zip(batch['qid'], batch['doc_ids'], batched_doc_scores, sources, targets, batched_docs):
-                instance = {'qid': qid.item(), 'source': source, 'target': target, 'retrievals': []}
-                for doc_id, doc, doc_score in zip(doc_ids, docs, doc_scores):
-                    doc_gens = {'doc_id': doc_id, 'doc_text': doc, 'doc_score': doc_score.item(), 'generator_output': []}
+        if batched_docs is None:
+            with open(Path(self.expdir)/ Path('generations.tsv'), 'a') as f:
+                for qid, source, target in zip(batch['qid'],sources, targets):
+                    instance = {'qid': qid.item(), 'source': source, 'target': target}
+                    doc_gens = {'generator_output': []}
                     input_ids = generated_output.input_encoding['input_ids'][overall_doc_idx, :]
                     attention_mask = generated_output.input_encoding['attention_mask'][overall_doc_idx, :]
                     sequences = generated_output.sequences[overall_doc_idx*self.n_samples_per_doc:
                                                            (overall_doc_idx+1)*self.n_samples_per_doc, :]
                     strings = generated_output.strings[overall_doc_idx*self.n_samples_per_doc:
                                                            (overall_doc_idx+1)*self.n_samples_per_doc]
-                    #log_liklihood = generated_output.log_liklihood[overall_doc_idx*self.n_samples_per_doc:
-                    #                                       (overall_doc_idx+1)*self.n_samples_per_doc]
-                    #baseline_log_liklihood = generated_output.baseline_log_liklihood[overall_doc_idx*self.n_samples_per_doc:
-                    #                                               (overall_doc_idx+1)*self.n_samples_per_doc]
                     doc_gens['generator_output'] = {
                         'input_ids': input_ids.tolist(),
                         'attention_mask': attention_mask.tolist(),
                         'sequences': sequences.tolist(),
                         'strings': strings,
-                        #'log_liklihood': log_liklihood.tolist(),
-                        #'baseline_log_liklihood': baseline_log_liklihood.tolist(),
                     }
 
-                    instance['retrievals'].append(doc_gens)
-                    if not self.FiD:
-                        overall_doc_idx+=1
-                if self.FiD:
                     overall_doc_idx+=1
-                self.instances.append(instance)
+                    self.instances.append(instance)
+        else:
+            with open(Path(self.expdir)/ Path('generations.tsv'), 'a') as f:
+                for qid, doc_ids, doc_scores, source, target, docs in zip(batch['qid'], batch['doc_ids'], batched_doc_scores, sources, targets, batched_docs):
+                    instance = {'qid': qid.item(), 'source': source, 'target': target, 'retrievals': []}
+                    for doc_id, doc, doc_score in zip(doc_ids, docs, doc_scores):
+                        doc_gens = {'doc_id': doc_id, 'doc_text': doc, 'doc_score': doc_score.item(), 'generator_output': []}
+                        input_ids = generated_output.input_encoding['input_ids'][overall_doc_idx, :]
+                        attention_mask = generated_output.input_encoding['attention_mask'][overall_doc_idx, :]
+                        sequences = generated_output.sequences[overall_doc_idx*self.n_samples_per_doc:
+                                                               (overall_doc_idx+1)*self.n_samples_per_doc, :]
+                        strings = generated_output.strings[overall_doc_idx*self.n_samples_per_doc:
+                                                               (overall_doc_idx+1)*self.n_samples_per_doc]
+                        #log_liklihood = generated_output.log_liklihood[overall_doc_idx*self.n_samples_per_doc:
+                        #                                       (overall_doc_idx+1)*self.n_samples_per_doc]
+                        #baseline_log_liklihood = generated_output.baseline_log_liklihood[overall_doc_idx*self.n_samples_per_doc:
+                        #                                               (overall_doc_idx+1)*self.n_samples_per_doc]
+                        doc_gens['generator_output'] = {
+                            'input_ids': input_ids.tolist(),
+                            'attention_mask': attention_mask.tolist(),
+                            'sequences': sequences.tolist(),
+                            'strings': strings,
+                            #'log_liklihood': log_liklihood.tolist(),
+                            #'baseline_log_liklihood': baseline_log_liklihood.tolist(),
+                        }
+
+                        instance['retrievals'].append(doc_gens)
+                        if not self.FiD:
+                            overall_doc_idx+=1
+                    if self.FiD:
+                        overall_doc_idx+=1
+                    self.instances.append(instance)
         return None
 
 def collate_fn(batch: Dict):
@@ -135,9 +164,10 @@ def collate_fn(batch: Dict):
     collated = default_collate(
         [{k:v for k, v in d.items() if k in {'qid', 'source', 'target'}} for d in batch]
     )
-    collated['doc_ids'] = [d['doc_ids'] for d in batch ]
-    collated['doc_texts'] = [d['doc_texts'] for d in batch ]
-    collated['doc_scores'] = [d['doc_scores'].tolist() for d in batch ]
+    if 'doc_id' in batch[0]:
+        collated['doc_ids'] = [d['doc_ids'] for d in batch ]
+        collated['doc_texts'] = [d['doc_texts'] for d in batch ]
+        collated['doc_scores'] = [d['doc_scores'].tolist() for d in batch ]
     return collated
 
 def generate():
@@ -161,8 +191,8 @@ def generate():
                              help='Path to train/val.source file, each line contains input to the generator')
     paths_group.add_argument('--target_path', type=str, default=(base_path / 'data/wow-kilt/val.target').as_posix(),
                              help='Path to train/val.target file, if given will be recorded in output, but not used to generate or compute any values (path is required but optional in spirit)')
-    paths_group.add_argument('--p_ranked_passages', type=str, default=(rerank_exp_base_path / '33/ranking_passages.tsv').as_posix() ,
-                             help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer')
+    paths_group.add_argument('--p_ranked_passages', type=str, default=None,
+                             help='Path to ranking_passages.tsv, retrieved and ranked using p-scorer. If not provided, then generates only using source')
     paths_group.add_argument('--p_scorer_checkpoint', type=str, help="Path to p_scorer checkpoint, can only be qtraining"), #default='/scr/biggest/ashwinp/readi/checkpoints/colbert/colbert-400000.dnn')
     paths_group.add_argument('--generator_checkpoint', default=None, type=str, help='Path to generator checkpoint')
     paths_group.add_argument('--no_retrieval_checkpoint', type=str, #default=(qtraining_exp_base_path / '17/checkpoints/epoch=1-step=15763.ckpt').as_posix() ,
@@ -251,8 +281,11 @@ def generate():
         val_dataset_scorer = model.p_scorer
     elif args.scorer=='q_scorer':
         val_dataset_scorer = model.q_scorer
-    val_dataset = PDataset(args.source_path, args.target_path, args.p_ranked_passages, doc_sampler, worker_id=0, n_workers=1,
-                           p_scorer=val_dataset_scorer, yield_scores=True)
+    if args.p_ranked_passages is None:
+        val_dataset = Seq2SeqDataset(args.source_path, args.target_path, worker_id=0, n_workers=1)
+    else:
+        val_dataset = PDataset(args.source_path, args.target_path, args.p_ranked_passages, doc_sampler, worker_id=0, n_workers=1,
+                               p_scorer=val_dataset_scorer, yield_scores=True)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
     trainer = Trainer(gpus=args.gpus, default_root_dir=curexpdir, limit_test_batches=args.limit_batches)

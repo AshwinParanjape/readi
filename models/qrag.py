@@ -847,6 +847,7 @@ class Generator(torch.nn.Module):
         input_encoding = self.query_doc_encoder(sources, batched_docs)
         input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in
                                input_encoding.data.items()}
+        #[print(self.query_doc_encoder.query_tokenizer.decode(i)) for i in input_encoding['input_ids']]
         generator_output = self.generator.generate(input_ids=input_encoding['input_ids'],
                                         attention_mask=input_encoding['attention_mask'],
                                          return_dict_in_generate=True,
