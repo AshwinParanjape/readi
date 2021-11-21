@@ -30,6 +30,7 @@ from meticulous import Experiment
 from tqdm import tqdm
 import csv
 import random
+import csv
 
 print(os.getcwd())
 sys.path = ['retriever/ColBERT'] + sys.path
@@ -312,7 +313,7 @@ class ClosedSetRetrievals():
                                         usecols=[0,1,2,3,4],
                                         names=['qid', 'pid', 'rank', 'score', 'doc_text'], header=0,
                                         dtype={'qid': int, 'pid': int, 'rank': int, 'score': float, 'doc_text':str} ,
-                                        na_filter=False,quoting=csv.QUOTE_NONE)
+                                        na_filter=False, quoting=csv.QUOTE_NONE)
 
 
             for chunk_df in df_reader:
@@ -847,6 +848,7 @@ class Generator(torch.nn.Module):
         input_encoding = self.query_doc_encoder(sources, batched_docs)
         input_encoding.data = {n: t.pin_memory().to(device=self.generator.device, non_blocking=True) for n, t in
                                input_encoding.data.items()}
+        #[print(self.query_doc_encoder.query_tokenizer.decode(i)) for i in input_encoding['input_ids']]
         generator_output = self.generator.generate(input_ids=input_encoding['input_ids'],
                                         attention_mask=input_encoding['attention_mask'],
                                          return_dict_in_generate=True,
@@ -1421,9 +1423,9 @@ class ReconstructionLossFn(torch.nn.Module):
             q_scores = self.q_scorer(st_text, batched_docs)
 
 
-        q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
+        q_probs = (q_scores!=0).any(dim=1, keepdim=True)*stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
-
+        reconstruction_loss = -(q_probs * generator_log_prob).sum()
         reconstruction_loss = -(q_probs * generator_log_prob).sum()
         return ReconstructionLoss(reconstruction_loss, -generator_log_prob, q_scores)
 
@@ -1942,10 +1944,15 @@ if __name__ == '__main__':
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'Reconstruction':
-        assert args.doc_sampler in {'PosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler'}
+        assert args.doc_sampler in {'PosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler', 'OracleDocumentSampler'}
         if args.doc_sampler == 'PriorDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
             train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
+        elif args.doc_sampler == 'OracleDocumentSampler':
+            doc_sampler = OracleDocumentSampler(args.n_sampled_docs_train)
+            train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                      args.train_oracle_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                      yield_scores=secondary_training, subsample=args.train_subsample)
         else:
             if args.doc_sampler == 'PosteriorDocumentSampler':
                 doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
