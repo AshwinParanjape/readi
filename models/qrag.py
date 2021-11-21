@@ -460,7 +460,6 @@ class OracleDocumentSampler(DocumentSampler):
         self.negatives_sampler = RandomDocumentSampler(self.n-1)
 
     def __call__(self, retrievals: pd.DataFrame, unrelated_retrievals: pd.DataFrame=None):
-        print(retrievals)
         oracle_positive = retrievals[(retrievals['rank_q'].notna()) & (retrievals['rank_q']!=-1)].copy()
         assert len(oracle_positive) <= 1
         negatives = retrievals[(retrievals['rank_p'].notna()) & (retrievals['rank_q'].isna())].sort_values('rank_p')[self.kP:].copy()
@@ -1422,9 +1421,9 @@ class ReconstructionLossFn(torch.nn.Module):
             q_scores = self.q_scorer(st_text, batched_docs)
 
 
-        q_probs = stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
+        q_probs = (q_scores!=0).any(dim=1, keepdim=True)*stable_softmax(q_scores, dim=1) #q_scores.shape = n_instances x n_docs
         generator_log_prob = -self.generator_nll(sources, targets, batched_docs) #Shape: n_instances x n_docs
-
+        reconstruction_loss = -(q_probs * generator_log_prob).sum()
         reconstruction_loss = -(q_probs * generator_log_prob).sum()
         return ReconstructionLoss(reconstruction_loss, -generator_log_prob, q_scores)
 
@@ -1943,10 +1942,15 @@ if __name__ == '__main__':
         val_dataset = PDataset(args.val_source_path, args.val_target_path, args.val_p_ranked_passages, val_doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.val_subsample)
         val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
     elif args.loss_type == 'Reconstruction':
-        assert args.doc_sampler in {'PosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler'}
+        assert args.doc_sampler in {'PosteriorDocumentSampler', 'PriorDocumentSampler', 'MixedPriorPosteriorDocumentSampler', 'OracleDocumentSampler'}
         if args.doc_sampler == 'PriorDocumentSampler':
             doc_sampler = SimpleDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature, top_k=args.docs_top_k)
             train_dataset = PDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus, subsample=args.train_subsample)
+        elif args.doc_sampler == 'OracleDocumentSampler':
+            doc_sampler = OracleDocumentSampler(args.n_sampled_docs_train)
+            train_dataset = PQDataset(args.train_source_path, args.train_target_path, args.train_p_ranked_passages,
+                                      args.train_oracle_passages, doc_sampler, worker_id=local_rank, n_workers=args.gpus,
+                                      yield_scores=secondary_training, subsample=args.train_subsample)
         else:
             if args.doc_sampler == 'PosteriorDocumentSampler':
                 doc_sampler = PosteriorDocumentSampler(args.n_sampled_docs_train, temperature=args.docs_sampling_temperature,  top_k=args.docs_top_k)
