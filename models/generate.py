@@ -165,7 +165,7 @@ def collate_fn(batch: Dict):
     collated = default_collate(
         [{k:v for k, v in d.items() if k in {'qid', 'source', 'target'}} for d in batch]
     )
-    if 'doc_id' in batch[0]:
+    if 'doc_ids' in batch[0]:
         collated['doc_ids'] = [d['doc_ids'] for d in batch ]
         collated['doc_texts'] = [d['doc_texts'] for d in batch ]
         collated['doc_scores'] = [d['doc_scores'].tolist() for d in batch ]
